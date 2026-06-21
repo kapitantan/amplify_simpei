@@ -1,122 +1,185 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useState, useEffect } from "react";
+import {
+  Authenticator,
+  Button,
+  Text,
+  TextField,
+  Heading,
+  Flex,
+  View,
+  Image,
+  Grid,
+  Divider,
+} from "@aws-amplify/ui-react";
+import { Amplify } from "aws-amplify";
+import "@aws-amplify/ui-react/styles.css";
+import { getUrl } from "aws-amplify/storage";
+import { uploadData } from "aws-amplify/storage";
+import { generateClient } from "aws-amplify/data";
+import outputs from "../amplify_outputs.json";
 
-function App() {
-  const [count, setCount] = useState(0)
+/**
+ * @type {import('aws-amplify/data').Client<import('../amplify/data/resource').Schema>}
+ */
+
+Amplify.configure(outputs);
+const client = generateClient({
+  authMode: "userPool",
+});
+
+export default function App() {
+  const [notes, setNotes] = useState([]);
+
+  useEffect(() => {
+    fetchNotes();
+  }, []);
+
+  async function fetchNotes() {
+    const { data: notes } = await client.models.Note.list();
+    await Promise.all(
+      notes.map(async (note) => {
+        if (note.image) {
+          const linkToStorageFile = await getUrl({
+            path: ({ identityId }) => `media/${identityId}/${note.image}`,
+          });
+          console.log(linkToStorageFile.url);
+          note.image = linkToStorageFile.url;
+        }
+        return note;
+      })
+    );
+    console.log(notes);
+    setNotes(notes);
+  }
+
+  async function createNote(event) {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    console.log(form.get("image").name);
+
+    const { data: newNote } = await client.models.Note.create({
+      name: form.get("name"),
+      description: form.get("description"),
+      image: form.get("image").name,
+    });
+
+    console.log(newNote);
+    if (newNote.image)
+      if (newNote.image)
+        await uploadData({
+          path: ({ identityId }) => `media/${identityId}/${newNote.image}`,
+          data: form.get("image"),
+        }).result;
+
+    fetchNotes();
+    event.target.reset();
+  }
+
+  async function deleteNote({ id }) {
+    const toBeDeletedNote = {
+      id: id,
+    };
+
+    const { data: deletedNote } = await client.models.Note.delete(
+      toBeDeletedNote
+    );
+    console.log(deletedNote);
+
+    fetchNotes();
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
+    <Authenticator>
+      {({ signOut }) => (
+        <Flex
+          className="App"
+          justifyContent="center"
+          alignItems="center"
+          direction="column"
+          width="70%"
+          margin="0 auto"
         >
-          Count is {count}
-        </button>
-      </section>
+          <Heading level={1}>My Notes App</Heading>
+          <View as="form" margin="3rem 0" onSubmit={createNote}>
+            <Flex
+              direction="column"
+              justifyContent="center"
+              gap="2rem"
+              padding="2rem"
+            >
+              <TextField
+                name="name"
+                placeholder="Note Name"
+                label="Note Name"
+                labelHidden
+                variation="quiet"
+                required
+              />
+              <TextField
+                name="description"
+                placeholder="Note Description"
+                label="Note Description"
+                labelHidden
+                variation="quiet"
+                required
+              />
+              <View
+                name="image"
+                as="input"
+                type="file"
+                alignSelf={"end"}
+                accept="image/png, image/jpeg"
+              />
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
+              <Button type="submit" variation="primary">
+                Create Note
+              </Button>
+            </Flex>
+          </View>
+          <Divider />
+          <Heading level={2}>Current Notes</Heading>
+          <Grid
+            margin="3rem 0"
+            autoFlow="column"
+            justifyContent="center"
+            gap="2rem"
+            alignContent="center"
+          >
+            {notes.map((note) => (
+              <Flex
+                key={note.id || note.name}
+                direction="column"
+                justifyContent="center"
+                alignItems="center"
+                gap="2rem"
+                border="1px solid #ccc"
+                padding="2rem"
+                borderRadius="5%"
+                className="box"
+              >
+                <View>
+                  <Heading level="3">{note.name}</Heading>
+                </View>
+                <Text fontStyle="italic">{note.description}</Text>
+                {note.image && (
+                  <Image
+                    src={note.image}
+                    alt={`visual aid for ${notes.name}`}
+                    style={{ width: 400 }}
+                  />
+                )}
+                <Button
+                  variation="destructive"
+                  onClick={() => deleteNote(note)}
                 >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+                  Delete note
+                </Button>
+              </Flex>
+            ))}
+          </Grid>
+          <Button onClick={signOut}>Sign Out</Button>
+        </Flex>
+      )}
+    </Authenticator>
+  );
 }
-
-export default App
