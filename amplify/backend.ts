@@ -1,5 +1,5 @@
 import { defineBackend } from '@aws-amplify/backend';
-import { Duration, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
 import { AuthorizationType, LambdaIntegration, RestApi } from 'aws-cdk-lib/aws-apigateway';
 import { AttributeType, BillingMode, Table } from 'aws-cdk-lib/aws-dynamodb';
 import { auth } from './auth/resource';
@@ -16,7 +16,7 @@ const backend = defineBackend({
   storage
 });
 
-const passkeyStack = backend.createStack('passkey');
+const passkeyStack = Stack.of(backend.signInChallenge.resources.lambda);
 
 const passkeyChallengesTable = new Table(passkeyStack, 'PasskeyChallenges', {
   partitionKey: {
