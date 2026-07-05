@@ -10,9 +10,7 @@ import {
   TextField,
   View,
 } from "@aws-amplify/ui-react";
-import { getCurrentUser, signOut } from "aws-amplify/auth";
 import { getUrl, uploadData } from "aws-amplify/storage";
-import { useNavigate } from "react-router-dom";
 import { noteModel, usesTodoFallback } from "../lib/amplifyClient";
 
 function normalizeNote(record) {
@@ -46,22 +44,12 @@ function createNoteInput({ name, description, image }) {
 }
 
 export default function NotesPage() {
-  const navigate = useNavigate();
   const [notes, setNotes] = useState([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    async function loadAuthenticatedNotes() {
-      try {
-        await getCurrentUser();
-        await fetchNotes();
-      } catch {
-        navigate("/");
-      }
-    }
-
-    loadAuthenticatedNotes();
-  }, [navigate]);
+    fetchNotes();
+  }, []);
 
   async function fetchNotes() {
     if (!noteModel) {
@@ -123,11 +111,6 @@ export default function NotesPage() {
     fetchNotes();
   }
 
-  async function handleSignOut() {
-    await signOut();
-    navigate("/");
-  }
-
   return (
     <Flex
       className="notes-page"
@@ -137,12 +120,7 @@ export default function NotesPage() {
       width="70%"
       margin="0 auto"
     >
-      <Flex width="100%" justifyContent="space-between" alignItems="center" gap="1rem">
-        <Heading level={1}>My Notes App</Heading>
-        <Button variation="link" onClick={handleSignOut}>
-          ログアウト
-        </Button>
-      </Flex>
+      <Heading level={1}>My Notes App</Heading>
       <View as="form" margin="3rem 0" onSubmit={createNote}>
         <Flex
           direction="column"
