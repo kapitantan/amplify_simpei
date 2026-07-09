@@ -58,6 +58,7 @@ export function createInitialGame() {
     phase: "placement",
     pendingForcedMove: null,
     winner: null,
+    winningLine: null,
     message: "赤の1手目です。上の世界の中央4か所に置いてください。",
   };
 }
@@ -234,9 +235,25 @@ export function forceMovePiece(state, toId) {
 }
 
 export function hasExactWinningLine(board, player, world) {
-  return getWinningLines(world).some(({ ids, extensions }) => {
+  return Boolean(getExactWinningLine(board, player, world));
+}
+
+export function getExactWinningLine(board, player, world) {
+  const winningLine = getWinningLines(world).find(({ ids, extensions }) => {
     return ids.every((id) => board[id] === player) && extensions.every((id) => board[id] !== player);
   });
+
+  return winningLine?.ids ?? null;
+}
+
+function getExactWinningLineContaining(board, player, world, positionId) {
+  const winningLine = getWinningLines(world).find(({ ids, extensions }) => {
+    return ids.includes(positionId)
+      && ids.every((id) => board[id] === player)
+      && extensions.every((id) => board[id] !== player);
+  });
+
+  return winningLine?.ids ?? null;
 }
 
 export function findSandwichedPieces(board, player, causedById = null) {
@@ -269,16 +286,16 @@ export function findSandwichedPieces(board, player, causedById = null) {
 }
 
 function finishTurnAction(state, player, actionPositionId) {
-  const winner = Object.values(WORLDS).some((world) => (
-    hasExactWinningLineContaining(state.board, player, world, actionPositionId)
-  ))
-    ? player
-    : null;
+  const winningLine = Object.values(WORLDS)
+    .map((world) => getExactWinningLineContaining(state.board, player, world, actionPositionId))
+    .find(Boolean) ?? null;
+  const winner = winningLine ? player : null;
 
   if (winner) {
     return {
       ...state,
       winner,
+      winningLine,
       message: `${getPlayerLabel(winner)}の勝ちです。`,
     };
   }
@@ -296,14 +313,6 @@ function finishTurnAction(state, player, actionPositionId) {
   }
 
   return switchTurn(state);
-}
-
-function hasExactWinningLineContaining(board, player, world, positionId) {
-  return getWinningLines(world).some(({ ids, extensions }) => {
-    return ids.includes(positionId)
-      && ids.every((id) => board[id] === player)
-      && extensions.every((id) => board[id] !== player);
-  });
 }
 
 function switchTurn(state, completedActionMessage = "") {

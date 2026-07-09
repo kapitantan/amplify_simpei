@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PLAYERS,
   POSITIONS,
@@ -18,6 +18,13 @@ import {
 export default function GamePage() {
   const [game, setGame] = useState(() => createInitialGame());
   const [selectedPiece, setSelectedPiece] = useState(null);
+  const [uiEffect, setUiEffect] = useState({
+    locked: false,
+    action: null,
+    invalidTarget: null,
+    selectedCell: null,
+  });
+  const effectTimeoutRef = useRef(null);
 
   const legalPlacementTargets = useMemo(() => new Set(getLegalPlacementTargets(game)), [game]);
   const forcedMoveTargets = useMemo(() => new Set(getForcedMoveTargets(game)), [game]);
@@ -26,6 +33,46 @@ export default function GamePage() {
     selectedPiece ? new Set(getLegalMoveTargets(game, selectedPiece)) : new Set()
   ), [game, selectedPiece]);
   const forcedPiece = game.pendingForcedMove?.pieces[0] ?? null;
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(effectTimeoutRef.current);
+    };
+  }, []);
+
+  function playEffect(action, durationMs) {
+    window.clearTimeout(effectTimeoutRef.current);
+    setUiEffect({
+      locked: durationMs > 0,
+      action,
+      invalidTarget: null,
+      selectedCell: action?.id ?? null,
+    });
+    effectTimeoutRef.current = window.setTimeout(() => {
+      setUiEffect((current) => ({
+        ...current,
+        locked: false,
+        action: null,
+      }));
+    }, durationMs);
+  }
+
+  function showInvalidTarget(positionId) {
+    window.clearTimeout(effectTimeoutRef.current);
+    setUiEffect((current) => ({
+      ...current,
+      locked: false,
+      action: null,
+      invalidTarget: positionId,
+      selectedCell: positionId,
+    }));
+    effectTimeoutRef.current = window.setTimeout(() => {
+      setUiEffect((current) => ({
+        ...current,
+        invalidTarget: null,
+      }));
+    }, 220);
+  }
 
   function updateGame(nextGame) {
     setGame(nextGame);
@@ -40,33 +87,75 @@ export default function GamePage() {
   }
 
   function handlePointClick(positionId) {
-    if (game.winner) {
+    if (game.winner || uiEffect.locked) {
       return;
     }
 
     if (game.pendingForcedMove) {
+      if (!forcedMoveTargets.has(positionId)) {
+        showInvalidTarget(positionId);
+        return;
+      }
+
       updateGame(forceMovePiece(game, positionId));
+      playEffect({ type: "relocated", id: positionId }, 460);
       return;
     }
 
     if (game.phase === "placement") {
-      updateGame(placePiece(game, positionId));
+      if (!legalPlacementTargets.has(positionId)) {
+        showInvalidTarget(positionId);
+        updateGame(placePiece(game, positionId));
+        return;
+      }
+
+      const nextGame = placePiece(game, positionId);
+      updateGame(nextGame);
+      playEffect({ type: "placed", id: positionId }, nextGame.pendingForcedMove ? 380 : 240);
       return;
     }
 
     if (game.board[positionId] === game.currentPlayer) {
-      setSelectedPiece(movablePieces.has(positionId) ? positionId : null);
+      if (!movablePieces.has(positionId)) {
+        showInvalidTarget(positionId);
+        setSelectedPiece(null);
+        return;
+      }
+
+      setSelectedPiece(positionId);
+      setUiEffect((current) => ({
+        ...current,
+        selectedCell: positionId,
+        invalidTarget: null,
+      }));
       return;
     }
 
     if (selectedPiece) {
-      updateGame(movePiece(game, selectedPiece, positionId));
+      if (!legalMoveTargets.has(positionId)) {
+        showInvalidTarget(positionId);
+        updateGame(movePiece(game, selectedPiece, positionId));
+        return;
+      }
+
+      const nextGame = movePiece(game, selectedPiece, positionId);
+      updateGame(nextGame);
+      playEffect({ type: "moved", id: positionId }, nextGame.pendingForcedMove ? 380 : 240);
+      return;
     }
+
+    showInvalidTarget(positionId);
   }
 
   function resetGame() {
     setGame(createInitialGame());
     setSelectedPiece(null);
+    setUiEffect({
+      locked: false,
+      action: null,
+      invalidTarget: null,
+      selectedCell: null,
+    });
   }
 
   function handlePass() {
@@ -116,6 +205,7 @@ export default function GamePage() {
           forcedMoveTargets={forcedMoveTargets}
           forcedPieceId={forcedPiece?.from}
           movablePieces={movablePieces}
+          uiEffect={uiEffect}
           onPointClick={handlePointClick}
         />
         <BoardLegend />
@@ -147,6 +237,7 @@ function IntegratedBoard({
   forcedMoveTargets,
   forcedPieceId,
   movablePieces,
+  uiEffect,
   onPointClick,
 }) {
   return (
@@ -181,6 +272,10 @@ function IntegratedBoard({
             || legalMoveTargets.has(id)
             || forcedMoveTargets.has(id);
           const isMovable = movablePieces.has(id);
+          const isInvalid = uiEffect.invalidTarget === id;
+          const isSelectedCell = uiEffect.selectedCell === id;
+          const isRecentAction = uiEffect.action?.id === id;
+          const isWinningPoint = game.winningLine?.includes(id);
           const label = `${getWorldLabel(world)} ${row + 1}行 ${col + 1}列`;
           const gridPosition = getBoardGridPosition(world, row, col);
 
@@ -195,6 +290,10 @@ function IntegratedBoard({
                 isForcedPiece ? "forced" : "",
                 isLegalTarget ? "legal-target" : "",
                 isMovable ? "movable" : "",
+                isInvalid ? "invalid" : "",
+                isSelectedCell ? "cell-selected" : "",
+                isRecentAction ? uiEffect.action.type : "",
+                isWinningPoint ? "winning" : "",
                 world === WORLDS.UPPER ? "upper-point" : "lower-point",
               ].filter(Boolean).join(" ")}
               style={{
@@ -204,7 +303,15 @@ function IntegratedBoard({
               onClick={() => onPointClick(id)}
               aria-label={occupant ? `${label}: ${getPlayerLabel(occupant)}の駒` : `${label}: 空き`}
             >
-              <span>{occupant ? getPlayerLabel(occupant) : getPointLabel(world, row, col)}</span>
+              <span className="point-hole" />
+              {isLegalTarget && !occupant && <span className="target-marker" />}
+              {occupant && (
+                <span className="piece">
+                  <span className="piece-head">{getPlayerLabel(occupant)}</span>
+                  <span className="piece-stem" />
+                </span>
+              )}
+              {!occupant && <span className="point-label">{getPointLabel(world, row, col)}</span>}
             </button>
           );
         })}

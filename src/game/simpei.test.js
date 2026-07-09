@@ -73,6 +73,22 @@ describe("simpei rules", () => {
     assert.equal(hasExactWinningLine(board, PLAYERS.RED, WORLDS.UPPER), false);
   });
 
+  it("stores the winning line for UI highlighting", () => {
+    let state = createInitialGame();
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 1));
+    state = placePiece(state, getPositionId(WORLDS.LOWER, 0, 0));
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 2));
+    state = placePiece(state, getPositionId(WORLDS.LOWER, 2, 2));
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 3));
+
+    assert.equal(state.winner, PLAYERS.RED);
+    assert.deepEqual(state.winningLine, [
+      getPositionId(WORLDS.UPPER, 1, 1),
+      getPositionId(WORLDS.UPPER, 1, 2),
+      getPositionId(WORLDS.UPPER, 1, 3),
+    ]);
+  });
+
   it("does not win by moving away from a four-in-a-row", () => {
     const state = {
       ...createInitialGame(),

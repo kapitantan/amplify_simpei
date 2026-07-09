@@ -130,18 +130,25 @@
   grid-template-rows: repeat(7, minmax(0, 1fr));
   gap: 0;
   aspect-ratio: 1;
-  border: 1px solid #cbd5e1;
+  border: 1px solid #9a6a3a;
   border-radius: 8px;
-  background: #f8fafc;
-  padding: 18px;
+  background:
+    radial-gradient(circle at 28% 24%, rgba(255, 255, 255, 0.35), transparent 22%),
+    linear-gradient(135deg, #c99454 0%, #b97a37 46%, #8a5428 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -12px 26px rgba(69, 37, 12, 0.22),
+    0 18px 36px rgba(15, 23, 42, 0.16);
+  padding: 22px;
   overflow: hidden;
 }
 
 .board-line {
   z-index: 0;
   display: block;
-  background: #94a3b8;
+  background: rgba(73, 43, 18, 0.52);
   pointer-events: none;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .board-line.horizontal {
@@ -158,62 +165,202 @@
 
 .board-point {
   z-index: 1;
+  position: relative;
+  display: grid;
+  place-items: center;
   place-self: center;
   aspect-ratio: 1;
   width: min(68px, 72%);
   min-width: 36px;
-  border: 2px solid #94a3b8;
+  border: 0;
   border-radius: 999px;
-  background: #f8fafc;
+  background: transparent;
   color: #64748b;
   font: inherit;
   font-weight: 700;
   cursor: pointer;
-  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  transform: translateY(0) scale(1);
+  transition: transform 150ms ease-out, filter 150ms ease-out;
 }
 
 .board-point.lower-point {
   width: min(52px, 58%);
   min-width: 30px;
-  border-style: dashed;
   font-size: 0.86rem;
+}
+
+.point-hole {
+  position: absolute;
+  inset: 14%;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 50% 60%, rgba(0, 0, 0, 0.28), rgba(0, 0, 0, 0.08) 42%, rgba(255, 255, 255, 0.24) 74%);
+  box-shadow:
+    inset 0 3px 7px rgba(45, 25, 9, 0.48),
+    inset 0 -1px 2px rgba(255, 255, 255, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.lower-point .point-hole {
+  inset: 18%;
+  opacity: 0.86;
 }
 
 .board-point:hover {
   transform: translateY(-1px);
 }
 
-.board-point.occupied {
-  color: #ffffff;
+.board-point.cell-selected {
+  transform: scale(1.06);
+  filter: drop-shadow(0 0 9px rgba(255, 255, 255, 0.42));
 }
 
-.board-point.red {
-  background: #dc2626;
-  border-color: #991b1b;
+.board-point.legal-target .point-hole {
+  box-shadow:
+    inset 0 3px 7px rgba(45, 25, 9, 0.38),
+    0 0 0 4px rgba(34, 197, 94, 0.22),
+    0 0 14px rgba(34, 197, 94, 0.26);
 }
 
-.board-point.blue {
-  background: #2563eb;
-  border-color: #1d4ed8;
+.target-marker {
+  width: 36%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.38);
+  box-shadow: 0 0 0 6px rgba(34, 197, 94, 0.12);
+  animation: target-pop 160ms ease-out;
 }
 
-.board-point.legal-target {
-  border-color: #16a34a;
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.22);
+.piece {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 84%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  transform-style: preserve-3d;
+  filter: drop-shadow(0 9px 8px rgba(39, 25, 14, 0.35));
+  animation: piece-land 140ms ease-out;
 }
 
-.board-point.selected {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.32);
+.lower-point .piece {
+  width: 88%;
 }
 
-.board-point.movable:not(.selected) {
-  box-shadow: inset 0 0 0 3px rgba(245, 158, 11, 0.5);
+.piece-head {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  box-shadow:
+    inset 0 3px 4px rgba(255, 255, 255, 0.42),
+    inset 0 -7px 10px rgba(0, 0, 0, 0.25),
+    0 2px 0 rgba(0, 0, 0, 0.22);
 }
 
-.board-point.forced {
-  border-color: #111827;
-  box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.28);
+.piece-stem {
+  position: absolute;
+  inset: 63% 24% -10%;
+  z-index: -1;
+  border-radius: 0 0 999px 999px;
+  background: rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 -4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.board-point.red .piece-head {
+  background:
+    radial-gradient(circle at 33% 24%, #fecaca 0 11%, transparent 12%),
+    radial-gradient(circle at 42% 32%, #f87171, #dc2626 52%, #991b1b 100%);
+}
+
+.board-point.blue .piece-head {
+  background:
+    radial-gradient(circle at 33% 24%, #bfdbfe 0 11%, transparent 12%),
+    radial-gradient(circle at 42% 32%, #60a5fa, #2563eb 52%, #1e3a8a 100%);
+}
+
+.board-point.selected .piece {
+  animation: none;
+  transform: translateY(-6px) scale(1.08);
+  filter:
+    drop-shadow(0 14px 14px rgba(39, 25, 14, 0.42))
+    drop-shadow(0 0 10px rgba(245, 158, 11, 0.45));
+}
+
+.board-point.selected::after,
+.board-point.movable:not(.selected)::after,
+.board-point.winning::after {
+  content: "";
+  position: absolute;
+  inset: -8%;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.board-point.selected::after {
+  border: 3px solid rgba(245, 158, 11, 0.92);
+  box-shadow: 0 0 18px rgba(245, 158, 11, 0.45);
+}
+
+.board-point.movable:not(.selected)::after {
+  border: 2px solid rgba(245, 158, 11, 0.58);
+}
+
+.board-point.placed .piece {
+  animation: piece-place 230ms ease-out;
+}
+
+.board-point.moved .piece {
+  animation: piece-slide-land 230ms ease-in-out;
+}
+
+.board-point.relocated .piece {
+  animation: piece-relocate 460ms ease-in-out;
+  z-index: 5;
+}
+
+.board-point.forced .piece {
+  animation: piece-captured 360ms ease-in-out infinite;
+  filter:
+    drop-shadow(0 10px 10px rgba(39, 25, 14, 0.38))
+    drop-shadow(0 0 16px rgba(255, 255, 255, 0.5));
+}
+
+.board-point.invalid {
+  animation: invalid-shake 190ms ease-in-out;
+}
+
+.board-point.invalid .point-hole {
+  box-shadow:
+    inset 0 3px 7px rgba(45, 25, 9, 0.38),
+    0 0 0 4px rgba(239, 68, 68, 0.28),
+    0 0 18px rgba(239, 68, 68, 0.34);
+}
+
+.board-point.winning .piece {
+  animation: winning-pulse 760ms ease-in-out infinite;
+  filter:
+    drop-shadow(0 10px 12px rgba(39, 25, 14, 0.34))
+    drop-shadow(0 0 18px rgba(250, 204, 21, 0.7));
+}
+
+.board-point.winning::after {
+  border: 3px solid rgba(250, 204, 21, 0.88);
+  box-shadow: 0 0 22px rgba(250, 204, 21, 0.58);
+}
+
+.point-label {
+  position: relative;
+  z-index: 2;
+  color: rgba(71, 85, 105, 0.55);
+  font-size: 0.68rem;
+  pointer-events: none;
 }
 
 .board-legend {
@@ -295,5 +442,120 @@
 
   .notes-page {
     width: min(100%, calc(100vw - 32px)) !important;
+  }
+}
+
+@keyframes target-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes piece-place {
+  0% {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.92);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(3px) scale(1.04);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes piece-slide-land {
+  0% {
+    transform: translateY(-8px) scale(1.08);
+  }
+  70% {
+    transform: translateY(1px) scale(0.98);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes piece-land {
+  0% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes piece-captured {
+  0% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+  20% {
+    transform: translateX(-3px);
+  }
+  40% {
+    transform: translateX(3px);
+    filter: brightness(1.35);
+  }
+  60% {
+    transform: translateX(-2px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+  100% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+}
+
+@keyframes piece-relocate {
+  0% {
+    opacity: 0.6;
+    transform: translateY(-34px) scale(1.08);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(-18px) scale(1.12);
+  }
+  82% {
+    transform: translateY(3px) scale(0.96);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes invalid-shake {
+  0% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes winning-pulse {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-5px) scale(1.08);
   }
 }
