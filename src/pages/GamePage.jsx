@@ -15,11 +15,6 @@ import {
   placePiece,
 } from "../game/simpei";
 
-const WORLD_LABELS = {
-  [WORLDS.UPPER]: "上の世界 4x4",
-  [WORLDS.LOWER]: "下の世界 3x3",
-};
-
 export default function GamePage() {
   const [game, setGame] = useState(() => createInitialGame());
   const [selectedPiece, setSelectedPiece] = useState(null);
@@ -113,8 +108,7 @@ export default function GamePage() {
       </section>
 
       <section className="game-layout" aria-label="シンペイ盤面">
-        <WorldBoard
-          world={WORLDS.UPPER}
+        <IntegratedBoard
           game={game}
           selectedPiece={selectedPiece}
           legalPlacementTargets={legalPlacementTargets}
@@ -124,17 +118,7 @@ export default function GamePage() {
           movablePieces={movablePieces}
           onPointClick={handlePointClick}
         />
-        <WorldBoard
-          world={WORLDS.LOWER}
-          game={game}
-          selectedPiece={selectedPiece}
-          legalPlacementTargets={legalPlacementTargets}
-          legalMoveTargets={legalMoveTargets}
-          forcedMoveTargets={forcedMoveTargets}
-          forcedPieceId={forcedPiece?.from}
-          movablePieces={movablePieces}
-          onPointClick={handlePointClick}
-        />
+        <BoardLegend />
       </section>
 
       <section className="game-controls">
@@ -155,8 +139,7 @@ export default function GamePage() {
   );
 }
 
-function WorldBoard({
-  world,
+function IntegratedBoard({
   game,
   selectedPiece,
   legalPlacementTargets,
@@ -166,14 +149,31 @@ function WorldBoard({
   movablePieces,
   onPointClick,
 }) {
-  const size = world === WORLDS.UPPER ? 4 : 3;
-  const positions = POSITIONS.filter((position) => position.world === world);
-
   return (
-    <section className={`world-board ${world}`}>
-      <h2>{WORLD_LABELS[world]}</h2>
-      <div className="board-grid" style={{ "--board-size": size }}>
-        {positions.map(({ id, row, col }) => {
+    <section className="integrated-board-panel">
+      <h2>ボード</h2>
+      <div className="simpei-board">
+        {Array.from({ length: 4 }, (_, index) => (
+          <span
+            key={`h-${index}`}
+            className="board-line horizontal"
+            style={{
+              gridRow: index * 2 + 1,
+              gridColumn: "1 / 8",
+            }}
+          />
+        ))}
+        {Array.from({ length: 4 }, (_, index) => (
+          <span
+            key={`v-${index}`}
+            className="board-line vertical"
+            style={{
+              gridRow: "1 / 8",
+              gridColumn: index * 2 + 1,
+            }}
+          />
+        ))}
+        {POSITIONS.map(({ id, world, row, col }) => {
           const occupant = game.board[id];
           const isSelected = selectedPiece === id;
           const isForcedPiece = forcedPieceId === id;
@@ -181,7 +181,8 @@ function WorldBoard({
             || legalMoveTargets.has(id)
             || forcedMoveTargets.has(id);
           const isMovable = movablePieces.has(id);
-          const label = `${WORLD_LABELS[world]} ${row + 1}行 ${col + 1}列`;
+          const label = `${getWorldLabel(world)} ${row + 1}行 ${col + 1}列`;
+          const gridPosition = getBoardGridPosition(world, row, col);
 
           return (
             <button
@@ -194,7 +195,12 @@ function WorldBoard({
                 isForcedPiece ? "forced" : "",
                 isLegalTarget ? "legal-target" : "",
                 isMovable ? "movable" : "",
+                world === WORLDS.UPPER ? "upper-point" : "lower-point",
               ].filter(Boolean).join(" ")}
+              style={{
+                gridRow: gridPosition.row,
+                gridColumn: gridPosition.col,
+              }}
               onClick={() => onPointClick(id)}
               aria-label={occupant ? `${label}: ${getPlayerLabel(occupant)}の駒` : `${label}: 空き`}
             >
@@ -205,6 +211,47 @@ function WorldBoard({
       </div>
     </section>
   );
+}
+
+function BoardLegend() {
+  return (
+    <aside className="board-legend">
+      <h2>盤面の見方</h2>
+      <p>大きい点が上の世界 U、交点の間にある小さい点が下の世界 L です。</p>
+      <dl>
+        <div>
+          <dt>上の世界</dt>
+          <dd>4x4 の交点。先手の初手は中央4点です。</dd>
+        </div>
+        <div>
+          <dt>下の世界</dt>
+          <dd>上の世界のマス目の中心にある 3x3 の交点です。</dd>
+        </div>
+        <div>
+          <dt>移動</dt>
+          <dd>必ず隣接する別の世界へ移動します。</dd>
+        </div>
+      </dl>
+    </aside>
+  );
+}
+
+function getBoardGridPosition(world, row, col) {
+  if (world === WORLDS.UPPER) {
+    return {
+      row: row * 2 + 1,
+      col: col * 2 + 1,
+    };
+  }
+
+  return {
+    row: row * 2 + 2,
+    col: col * 2 + 2,
+  };
+}
+
+function getWorldLabel(world) {
+  return world === WORLDS.UPPER ? "上の世界" : "下の世界";
 }
 
 function getPointLabel(world, row, col) {

@@ -123,6 +123,38 @@ describe("simpei rules", () => {
     assert.equal(moved.board[getPositionId(WORLDS.LOWER, 1, 1)], PLAYERS.RED);
   });
 
+  it("uses the overlaid board adjacency between upper corners, edges, centers, and lower points", () => {
+    assert.deepEqual(getAdjacentPositions(getPositionId(WORLDS.UPPER, 0, 0)), [
+      getPositionId(WORLDS.LOWER, 0, 0),
+    ]);
+
+    assert.deepEqual(new Set(getAdjacentPositions(getPositionId(WORLDS.UPPER, 0, 1))), new Set([
+      getPositionId(WORLDS.LOWER, 0, 0),
+      getPositionId(WORLDS.LOWER, 0, 1),
+    ]));
+
+    assert.deepEqual(new Set(getAdjacentPositions(getPositionId(WORLDS.UPPER, 1, 1))), new Set([
+      getPositionId(WORLDS.LOWER, 0, 0),
+      getPositionId(WORLDS.LOWER, 0, 1),
+      getPositionId(WORLDS.LOWER, 1, 0),
+      getPositionId(WORLDS.LOWER, 1, 1),
+    ]));
+
+    assert.deepEqual(new Set(getAdjacentPositions(getPositionId(WORLDS.LOWER, 0, 0))), new Set([
+      getPositionId(WORLDS.UPPER, 0, 0),
+      getPositionId(WORLDS.UPPER, 0, 1),
+      getPositionId(WORLDS.UPPER, 1, 0),
+      getPositionId(WORLDS.UPPER, 1, 1),
+    ]));
+
+    assert.deepEqual(new Set(getAdjacentPositions(getPositionId(WORLDS.LOWER, 1, 1))), new Set([
+      getPositionId(WORLDS.UPPER, 1, 1),
+      getPositionId(WORLDS.UPPER, 1, 2),
+      getPositionId(WORLDS.UPPER, 2, 1),
+      getPositionId(WORLDS.UPPER, 2, 2),
+    ]));
+  });
+
   it("allows pass only when the current player has no legal moves", () => {
     const state = fillPlacementWithoutWinner();
     const rejected = passTurn(state);

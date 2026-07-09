@@ -107,41 +107,76 @@
 
 .game-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.82fr);
+  grid-template-columns: minmax(320px, 720px) minmax(240px, 1fr);
   gap: 24px;
   align-items: start;
 }
 
-.world-board {
+.integrated-board-panel,
+.board-legend {
   min-width: 0;
 }
 
-.world-board h2 {
+.integrated-board-panel h2,
+.board-legend h2 {
   margin: 0 0 12px;
   font-size: 1.1rem;
 }
 
-.board-grid {
+.simpei-board {
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(var(--board-size), minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+  gap: 0;
+  aspect-ratio: 1;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
-  background: #e2e8f0;
-  padding: 16px;
+  background: #f8fafc;
+  padding: 18px;
+  overflow: hidden;
+}
+
+.board-line {
+  z-index: 0;
+  display: block;
+  background: #94a3b8;
+  pointer-events: none;
+}
+
+.board-line.horizontal {
+  align-self: center;
+  justify-self: stretch;
+  height: 2px;
+}
+
+.board-line.vertical {
+  align-self: stretch;
+  justify-self: center;
+  width: 2px;
 }
 
 .board-point {
+  z-index: 1;
+  place-self: center;
   aspect-ratio: 1;
-  min-width: 0;
+  width: min(68px, 72%);
+  min-width: 36px;
   border: 2px solid #94a3b8;
-  border-radius: 8px;
+  border-radius: 999px;
   background: #f8fafc;
   color: #64748b;
   font: inherit;
   font-weight: 700;
   cursor: pointer;
   transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.board-point.lower-point {
+  width: min(52px, 58%);
+  min-width: 30px;
+  border-style: dashed;
+  font-size: 0.86rem;
 }
 
 .board-point:hover {
@@ -181,6 +216,37 @@
   box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.28);
 }
 
+.board-legend {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.board-legend p {
+  margin: 0 0 16px;
+  color: #475569;
+  line-height: 1.7;
+}
+
+.board-legend dl,
+.board-legend dd {
+  margin: 0;
+}
+
+.board-legend div + div {
+  margin-top: 14px;
+}
+
+.board-legend dt {
+  font-weight: 700;
+}
+
+.board-legend dd {
+  color: #475569;
+  line-height: 1.6;
+}
+
 .game-controls {
   justify-content: space-between;
   margin-top: 24px;
@@ -214,9 +280,17 @@
     margin-top: 16px;
   }
 
-  .board-grid {
-    gap: 8px;
+  .simpei-board {
     padding: 10px;
+  }
+
+  .board-point {
+    min-width: 30px;
+  }
+
+  .board-point.lower-point {
+    min-width: 24px;
+    font-size: 0.75rem;
   }
 
   .notes-page {
