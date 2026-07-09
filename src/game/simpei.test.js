@@ -214,6 +214,25 @@ describe("simpei rules", () => {
     ]);
   });
 
+  it("finds multiple contiguous sandwiched pieces in a single line", () => {
+    const board = emptyBoard();
+    board[getPositionId(WORLDS.UPPER, 1, 0)] = PLAYERS.RED;
+    board[getPositionId(WORLDS.UPPER, 1, 1)] = PLAYERS.BLUE;
+    board[getPositionId(WORLDS.UPPER, 1, 2)] = PLAYERS.BLUE;
+    board[getPositionId(WORLDS.UPPER, 1, 3)] = PLAYERS.RED;
+
+    assert.deepEqual(findSandwichedPieces(board, PLAYERS.RED), [
+      {
+        from: getPositionId(WORLDS.UPPER, 1, 1),
+        player: PLAYERS.BLUE,
+      },
+      {
+        from: getPositionId(WORLDS.UPPER, 1, 2),
+        player: PLAYERS.BLUE,
+      },
+    ]);
+  });
+
   it("resolves forced moves without triggering opponent wins or chains", () => {
     let state = createInitialGame();
     state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 1));
@@ -229,5 +248,53 @@ describe("simpei rules", () => {
     assert.equal(state.winner, null);
     assert.equal(state.pendingForcedMove, null);
     assert.equal(state.currentPlayer, PLAYERS.BLUE);
+  });
+
+  it("allows every piece to be moved when two contiguous pieces are sandwiched", () => {
+    let state = {
+      ...createInitialGame(),
+      currentPlayer: PLAYERS.RED,
+      phase: "movement",
+      turnNumber: 9,
+      placedCount: {
+        [PLAYERS.RED]: 4,
+        [PLAYERS.BLUE]: 4,
+      },
+      board: {
+        ...emptyBoard(),
+        [getPositionId(WORLDS.UPPER, 1, 0)]: PLAYERS.RED,
+        [getPositionId(WORLDS.UPPER, 1, 1)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.UPPER, 1, 2)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.LOWER, 1, 2)]: PLAYERS.RED,
+      },
+    };
+
+    state = movePiece(
+      state,
+      getPositionId(WORLDS.LOWER, 1, 2),
+      getPositionId(WORLDS.UPPER, 1, 3)
+    );
+
+    assert.deepEqual(state.pendingForcedMove.pieces, [
+      {
+        from: getPositionId(WORLDS.UPPER, 1, 1),
+        player: PLAYERS.BLUE,
+      },
+      {
+        from: getPositionId(WORLDS.UPPER, 1, 2),
+        player: PLAYERS.BLUE,
+      },
+    ]);
+
+    state = forceMovePiece(state, getPositionId(WORLDS.LOWER, 0, 0));
+    assert.equal(state.pendingForcedMove.pieces.length, 1);
+    assert.equal(getForcedMoveTargets(state).includes(getPositionId(WORLDS.UPPER, 1, 1)), true);
+
+    state = forceMovePiece(state, getPositionId(WORLDS.UPPER, 1, 1));
+    assert.equal(state.pendingForcedMove, null);
+    assert.equal(state.currentPlayer, PLAYERS.BLUE);
+    assert.equal(state.board[getPositionId(WORLDS.LOWER, 0, 0)], PLAYERS.BLUE);
+    assert.equal(state.board[getPositionId(WORLDS.UPPER, 1, 1)], PLAYERS.BLUE);
+    assert.equal(state.board[getPositionId(WORLDS.UPPER, 1, 2)], null);
   });
 });

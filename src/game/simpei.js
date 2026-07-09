@@ -266,8 +266,8 @@ export function findSandwichedPieces(board, player, causedById = null) {
     }
 
     for (const [rowDelta, colDelta] of DIRECTIONS) {
-      const before = getPositionId(world, row - rowDelta, col - colDelta);
-      const after = getPositionId(world, row + rowDelta, col + colDelta);
+      const before = findSandwichBoundary(board, opponent, world, row, col, -rowDelta, -colDelta);
+      const after = findSandwichBoundary(board, opponent, world, row, col, rowDelta, colDelta);
 
       if (causedById && before !== causedById && after !== causedById) {
         continue;
@@ -283,6 +283,23 @@ export function findSandwichedPieces(board, player, causedById = null) {
     from,
     player: opponent,
   }));
+}
+
+function findSandwichBoundary(board, opponent, world, row, col, rowDelta, colDelta) {
+  let currentRow = row + rowDelta;
+  let currentCol = col + colDelta;
+
+  while (isInside(world, currentRow, currentCol)) {
+    const id = getPositionId(world, currentRow, currentCol);
+    if (board[id] !== opponent) {
+      return id;
+    }
+
+    currentRow += rowDelta;
+    currentCol += colDelta;
+  }
+
+  return null;
 }
 
 function finishTurnAction(state, player, actionPositionId) {

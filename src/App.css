@@ -234,13 +234,12 @@
 .piece {
   position: relative;
   z-index: 2;
-  display: grid;
-  place-items: center;
+  display: block;
   width: 84%;
   aspect-ratio: 1;
-  border-radius: 999px;
+  border-radius: 34% 34% 42% 42%;
   transform-style: preserve-3d;
-  filter: drop-shadow(0 9px 8px rgba(39, 25, 14, 0.35));
+  filter: drop-shadow(0 10px 8px rgba(39, 25, 14, 0.38));
   animation: piece-land 140ms ease-out;
 }
 
@@ -248,41 +247,87 @@
   width: 88%;
 }
 
+.piece::before {
+  content: "";
+  position: absolute;
+  left: 41%;
+  top: -10%;
+  z-index: 2;
+  width: 18%;
+  height: 32%;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  border-radius: 70% 70% 16% 16%;
+  background: var(--piece-mid);
+  box-shadow:
+    inset 4px 0 4px rgba(255, 255, 255, 0.32),
+    inset -4px -4px 5px rgba(0, 0, 0, 0.22);
+}
+
 .piece-head {
   position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 0.8rem;
-  font-weight: 800;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  inset: 12% 4% 18%;
+  border-radius: 48% 48% 36% 36% / 56% 56% 34% 34%;
+  color: transparent;
+  font-size: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 30% 22%, var(--piece-glint) 0 9%, transparent 10%),
+    radial-gradient(ellipse at 35% 25%, rgba(255, 255, 255, 0.2), transparent 33%),
+    linear-gradient(145deg, var(--piece-light), var(--piece-mid) 56%, var(--piece-dark));
   box-shadow:
-    inset 0 3px 4px rgba(255, 255, 255, 0.42),
-    inset 0 -7px 10px rgba(0, 0, 0, 0.25),
-    0 2px 0 rgba(0, 0, 0, 0.22);
+    inset 8px 9px 8px rgba(255, 255, 255, 0.24),
+    inset -7px -9px 12px rgba(0, 0, 0, 0.3),
+    0 3px 0 rgba(0, 0, 0, 0.2);
+}
+
+.piece-head::before {
+  content: "";
+  position: absolute;
+  inset: 39% 20% 30%;
+  background:
+    radial-gradient(ellipse at 24% 50%, rgba(255, 255, 255, 0.96) 0 18%, transparent 19%),
+    radial-gradient(ellipse at 76% 50%, rgba(255, 255, 255, 0.96) 0 18%, transparent 19%);
+}
+
+.piece-head::after {
+  content: "";
+  position: absolute;
+  inset: 26% 18% 27%;
+  background:
+    linear-gradient(22deg, transparent 0 24%, rgba(255, 255, 255, 0.86) 25% 30%, transparent 31% 100%) 5% 10% / 42% 34% no-repeat,
+    linear-gradient(-22deg, transparent 0 24%, rgba(255, 255, 255, 0.86) 25% 30%, transparent 31% 100%) 95% 10% / 42% 34% no-repeat,
+    linear-gradient(26deg, transparent 0 39%, rgba(255, 255, 255, 0.86) 40% 45%, transparent 46% 100%) 0 74% / 50% 30% no-repeat,
+    linear-gradient(-26deg, transparent 0 39%, rgba(255, 255, 255, 0.86) 40% 45%, transparent 46% 100%) 100% 74% / 50% 30% no-repeat;
 }
 
 .piece-stem {
   position: absolute;
-  inset: 63% 24% -10%;
+  left: 24%;
+  right: 24%;
+  bottom: -2%;
+  height: 30%;
   z-index: -1;
-  border-radius: 0 0 999px 999px;
-  background: rgba(0, 0, 0, 0.22);
-  box-shadow: inset 0 -4px 8px rgba(0, 0, 0, 0.2);
+  border-radius: 22% 22% 42% 42% / 20% 20% 48% 48%;
+  background:
+    linear-gradient(155deg, var(--piece-light), var(--piece-mid) 48%, var(--piece-dark));
+  box-shadow:
+    inset 5px 0 5px rgba(255, 255, 255, 0.2),
+    inset -5px -5px 7px rgba(0, 0, 0, 0.28),
+    0 3px 0 rgba(0, 0, 0, 0.2);
 }
 
-.board-point.red .piece-head {
-  background:
-    radial-gradient(circle at 33% 24%, #fecaca 0 11%, transparent 12%),
-    radial-gradient(circle at 42% 32%, #f87171, #dc2626 52%, #991b1b 100%);
+.board-point.red .piece {
+  --piece-light: #ff7a72;
+  --piece-mid: #dc2626;
+  --piece-dark: #991b1b;
+  --piece-glint: #fecaca;
 }
 
-.board-point.blue .piece-head {
-  background:
-    radial-gradient(circle at 33% 24%, #bfdbfe 0 11%, transparent 12%),
-    radial-gradient(circle at 42% 32%, #60a5fa, #2563eb 52%, #1e3a8a 100%);
+.board-point.blue .piece {
+  --piece-light: #5b7dff;
+  --piece-mid: #263fb4;
+  --piece-dark: #151f73;
+  --piece-glint: #c7d2fe;
 }
 
 .board-point.selected .piece {
