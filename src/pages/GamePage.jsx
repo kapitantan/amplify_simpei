@@ -1,23 +1,39 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ACTION_TYPES,
   PLAYERS,
   POSITIONS,
   WORLDS,
+  applyAction,
   createInitialGame,
-  forceMovePiece,
   getForcedMoveTargets,
+  getLegalActions,
   getLegalMoveTargets,
   getLegalPlacementTargets,
   getMovablePieces,
   getPlayerLabel,
-  movePiece,
-  passTurn,
-  placePiece,
+  isLegalAction,
 } from "../game/simpei";
+import {
+  createCpuMatch,
+  recordHumanMove,
+  recordMatchResult,
+  requestCpuMove,
+} from "../lib/cpuClient";
+
+const HUMAN_PLAYER = PLAYERS.RED;
+const CPU_PLAYER = PLAYERS.BLUE;
+const CPU_DIFFICULTY = "normal";
 
 export default function GamePage() {
   const [game, setGame] = useState(() => createInitialGame());
   const [selectedPiece, setSelectedPiece] = useState(null);
+  const [cpuMode, setCpuMode] = useState(false);
+  const [cpuThinking, setCpuThinking] = useState(false);
+  const [cpuError, setCpuError] = useState("");
+  const [matchId, setMatchId] = useState(null);
+  const [moveHistory, setMoveHistory] = useState([]);
+  const [flyingPiece, setFlyingPiece] = useState(null);
   const [uiEffect, setUiEffect] = useState({
     locked: false,
     action: null,
@@ -25,6 +41,14 @@ export default function GamePage() {
     selectedCell: null,
   });
   const effectTimeoutRef = useRef(null);
+  const cpuTimeoutRef = useRef(null);
+  const forcedMoveTimeoutRef = useRef(null);
+  const cpuModeRef = useRef(false);
+  const matchIdRef = useRef(null);
+  const historyRef = useRef([]);
+  const resultRecordedRef = useRef(false);
+  const boardRef = useRef(null);
+  const pointRefs = useRef(new Map());
 
   const legalPlacementTargets = useMemo(() => new Set(getLegalPlacementTargets(game)), [game]);
   const forcedMoveTargets = useMemo(() => new Set(getForcedMoveTargets(game)), [game]);
@@ -37,6 +61,8 @@ export default function GamePage() {
   useEffect(() => {
     return () => {
       window.clearTimeout(effectTimeoutRef.current);
+      window.clearTimeout(cpuTimeoutRef.current);
+      window.clearTimeout(forcedMoveTimeoutRef.current);
     };
   }, []);
 
@@ -74,20 +100,189 @@ export default function GamePage() {
     }, 220);
   }
 
-  function updateGame(nextGame) {
-    setGame(nextGame);
-    if (nextGame.pendingForcedMove || nextGame.winner || nextGame.phase !== "movement") {
-      setSelectedPiece(null);
+  function playForcedMoveAnimation(piece, toId, onComplete) {
+    const boardRect = boardRef.current?.getBoundingClientRect();
+    const fromRect = pointRefs.current.get(piece.from)?.getBoundingClientRect();
+    const toRect = pointRefs.current.get(toId)?.getBoundingClientRect();
+
+    if (!boardRect || !fromRect || !toRect) {
+      onComplete();
       return;
     }
 
-    if (selectedPiece && nextGame.board[selectedPiece] !== nextGame.currentPlayer) {
+    window.clearTimeout(forcedMoveTimeoutRef.current);
+    setFlyingPiece({
+      from: piece.from,
+      to: toId,
+      player: piece.player,
+      left: fromRect.left + fromRect.width / 2 - boardRect.left,
+      top: fromRect.top + fromRect.height / 2 - boardRect.top,
+      size: fromRect.width,
+      deltaX: toRect.left + toRect.width / 2 - fromRect.left - fromRect.width / 2,
+      deltaY: toRect.top + toRect.height / 2 - fromRect.top - fromRect.height / 2,
+    });
+    setUiEffect((current) => ({
+      ...current,
+      locked: true,
+      action: null,
+      invalidTarget: null,
+      selectedCell: toId,
+    }));
+
+    forcedMoveTimeoutRef.current = window.setTimeout(() => {
+      setFlyingPiece(null);
+      onComplete();
+      playEffect({ type: "relocated", id: toId }, 120);
+    }, 540);
+  }
+
+  function updateGame(nextGame, previousGame = game) {
+    setGame(nextGame);
+    if (nextGame.pendingForcedMove || nextGame.winner || nextGame.phase !== "movement") {
       setSelectedPiece(null);
+    } else if (selectedPiece && nextGame.board[selectedPiece] !== nextGame.currentPlayer) {
+      setSelectedPiece(null);
+    }
+
+    if (cpuMode && !resultRecordedRef.current && nextGame.winner && matchIdRef.current) {
+      resultRecordedRef.current = true;
+      recordMatchResult({
+        matchId: matchIdRef.current,
+        winner: nextGame.winner,
+        finalState: nextGame,
+      }).catch(() => {
+        setCpuError("CPUサーバーに終局結果を保存できませんでした。");
+      });
+    }
+
+    if (cpuMode) {
+      queueCpuTurn(nextGame, previousGame);
+    }
+  }
+
+  function appendHistory(entry) {
+    const nextHistory = [...historyRef.current, entry];
+    historyRef.current = nextHistory;
+    setMoveHistory(nextHistory);
+    return nextHistory;
+  }
+
+  function commitAction(action, actor = "human") {
+    const legalActionsBefore = getLegalActions(game);
+    if (!isLegalAction(game, action)) {
+      showInvalidTarget(action?.to ?? action?.from ?? null);
+      return;
+    }
+
+    const previousGame = game;
+    const nextGame = applyAction(game, action);
+    const historyEntry = {
+      actor,
+      player: previousGame.currentPlayer,
+      turnNumber: previousGame.turnNumber,
+      action,
+    };
+    const nextHistory = appendHistory(historyEntry);
+
+    if (actor === "human" && cpuMode && matchIdRef.current) {
+      recordHumanMove({
+        matchId: matchIdRef.current,
+        player: previousGame.currentPlayer,
+        turnNumber: previousGame.turnNumber,
+        action,
+        gameStateBefore: previousGame,
+        gameStateAfter: nextGame,
+        legalActions: legalActionsBefore,
+      }).catch(() => {
+        setCpuError("CPUサーバーに人間の手を保存できませんでした。");
+      });
+    }
+
+    updateGame(nextGame, previousGame);
+    return { nextGame, nextHistory };
+  }
+
+  function queueCpuTurn(nextGame, previousGame = game) {
+    if (!isCpuTurn(nextGame) || cpuThinking) {
+      return;
+    }
+
+    window.clearTimeout(cpuTimeoutRef.current);
+    cpuTimeoutRef.current = window.setTimeout(() => {
+      playCpuTurn(nextGame, previousGame);
+    }, 360);
+  }
+
+  async function playCpuTurn(cpuGame) {
+    const currentMatchId = matchIdRef.current;
+    const cpuLegalActions = getLegalActions(cpuGame);
+    if (!currentMatchId || cpuLegalActions.length === 0 || !isCpuTurn(cpuGame)) {
+      return;
+    }
+
+    setCpuThinking(true);
+    setCpuError("");
+
+    try {
+      const response = await requestCpuMove({
+        matchId: currentMatchId,
+        gameState: cpuGame,
+        legalActions: cpuLegalActions,
+        cpuPlayer: CPU_PLAYER,
+        difficulty: CPU_DIFFICULTY,
+        moveHistory: historyRef.current,
+      });
+      const selectedAction = response.selected_action;
+
+      if (!isLegalAction(cpuGame, selectedAction)) {
+        throw new Error("CPU returned an illegal action");
+      }
+
+      const completeCpuAction = () => {
+        const nextGame = applyAction(cpuGame, selectedAction);
+        appendHistory({
+          actor: "cpu",
+          player: cpuGame.currentPlayer,
+          turnNumber: cpuGame.turnNumber,
+          action: selectedAction,
+          reason: response.reason,
+          fallback: response.fallback,
+        });
+        setGame(nextGame);
+        setSelectedPiece(null);
+        if (selectedAction.type !== ACTION_TYPES.FORCE_MOVE) {
+          playEffect({ type: getActionEffectType(selectedAction), id: selectedAction.to ?? selectedAction.from }, 240);
+        }
+
+        if (!resultRecordedRef.current && nextGame.winner && matchIdRef.current) {
+          resultRecordedRef.current = true;
+          recordMatchResult({
+            matchId: matchIdRef.current,
+            winner: nextGame.winner,
+            finalState: nextGame,
+          }).catch(() => {
+            setCpuError("CPUサーバーに終局結果を保存できませんでした。");
+          });
+        }
+
+        queueCpuTurn(nextGame, cpuGame);
+      };
+
+      const forcedCpuPiece = cpuGame.pendingForcedMove?.pieces[0];
+      if (selectedAction.type === ACTION_TYPES.FORCE_MOVE && forcedCpuPiece) {
+        playForcedMoveAnimation(forcedCpuPiece, selectedAction.to, completeCpuAction);
+      } else {
+        completeCpuAction();
+      }
+    } catch (error) {
+      setCpuError(error instanceof Error ? error.message : "CPU手番でエラーが発生しました。");
+    } finally {
+      setCpuThinking(false);
     }
   }
 
   function handlePointClick(positionId) {
-    if (game.winner || uiEffect.locked) {
+    if (game.winner || uiEffect.locked || isCpuTurn(game)) {
       return;
     }
 
@@ -97,21 +292,20 @@ export default function GamePage() {
         return;
       }
 
-      updateGame(forceMovePiece(game, positionId));
-      playEffect({ type: "relocated", id: positionId }, 460);
+      playForcedMoveAnimation(forcedPiece, positionId, () => {
+        commitAction({ type: ACTION_TYPES.FORCE_MOVE, from: forcedPiece.from, to: positionId });
+      });
       return;
     }
 
     if (game.phase === "placement") {
       if (!legalPlacementTargets.has(positionId)) {
         showInvalidTarget(positionId);
-        updateGame(placePiece(game, positionId));
         return;
       }
 
-      const nextGame = placePiece(game, positionId);
-      updateGame(nextGame);
-      playEffect({ type: "placed", id: positionId }, nextGame.pendingForcedMove ? 380 : 240);
+      const result = commitAction({ type: ACTION_TYPES.PLACE, to: positionId });
+      playEffect({ type: "placed", id: positionId }, result?.nextGame.pendingForcedMove ? 380 : 240);
       return;
     }
 
@@ -134,13 +328,11 @@ export default function GamePage() {
     if (selectedPiece) {
       if (!legalMoveTargets.has(positionId)) {
         showInvalidTarget(positionId);
-        updateGame(movePiece(game, selectedPiece, positionId));
         return;
       }
 
-      const nextGame = movePiece(game, selectedPiece, positionId);
-      updateGame(nextGame);
-      playEffect({ type: "moved", id: positionId }, nextGame.pendingForcedMove ? 380 : 240);
+      const result = commitAction({ type: ACTION_TYPES.MOVE, from: selectedPiece, to: positionId });
+      playEffect({ type: "moved", id: positionId }, result?.nextGame.pendingForcedMove ? 380 : 240);
       return;
     }
 
@@ -148,18 +340,74 @@ export default function GamePage() {
   }
 
   function resetGame() {
-    setGame(createInitialGame());
+    const nextGame = createInitialGame();
+    setGame(nextGame);
     setSelectedPiece(null);
+    setMoveHistory([]);
+    historyRef.current = [];
+    resultRecordedRef.current = false;
+    setCpuError("");
     setUiEffect({
       locked: false,
       action: null,
       invalidTarget: null,
       selectedCell: null,
     });
+
+    if (cpuMode) {
+      startCpuMatch(nextGame);
+    }
   }
 
   function handlePass() {
-    updateGame(passTurn(game));
+    commitAction({ type: ACTION_TYPES.PASS });
+  }
+
+  async function handleCpuModeChange(event) {
+    const enabled = event.target.checked;
+    cpuModeRef.current = enabled;
+    setCpuMode(enabled);
+    setCpuError("");
+
+    if (!enabled) {
+      matchIdRef.current = null;
+      setMatchId(null);
+      return;
+    }
+
+    await startCpuMatch(game);
+  }
+
+  async function startCpuMatch(currentGame) {
+    try {
+      const response = await createCpuMatch({
+        humanPlayer: HUMAN_PLAYER,
+        cpuPlayer: CPU_PLAYER,
+        difficulty: CPU_DIFFICULTY,
+      });
+      matchIdRef.current = response.match_id;
+      setMatchId(response.match_id);
+      resultRecordedRef.current = false;
+      queueCpuTurn(currentGame, currentGame);
+    } catch (error) {
+      cpuModeRef.current = false;
+      setCpuMode(false);
+      setCpuError(error instanceof Error ? error.message : "CPUサーバーに接続できませんでした。");
+    }
+  }
+
+  function isCpuTurn(state) {
+    return cpuModeRef.current && !state.winner && state.currentPlayer === CPU_PLAYER;
+  }
+
+  function getActionEffectType(action) {
+    if (action.type === ACTION_TYPES.FORCE_MOVE) {
+      return "relocated";
+    }
+    if (action.type === ACTION_TYPES.MOVE) {
+      return "moved";
+    }
+    return "placed";
   }
 
   return (
@@ -169,7 +417,7 @@ export default function GamePage() {
           <p className="eyebrow">Local match</p>
           <h1>シンペイ</h1>
           <p className="game-lead">
-            ログインなしで遊べるローカル2人対戦です。赤が先手、青が後手です。
+            ログインなしで遊べるローカル対戦です。CPUモードでは赤が人間、青がCPUです。
           </p>
         </div>
         <div className="game-actions">
@@ -185,8 +433,10 @@ export default function GamePage() {
           <strong>{game.winner ? `${getPlayerLabel(game.winner)}の勝ち` : `${getPlayerLabel(game.currentPlayer)}の手番`}</strong>
           <span>{game.phase === "placement" ? "配置フェーズ" : "移動フェーズ"}</span>
           <span>{game.turnNumber}手目</span>
+          {cpuThinking && <span>CPU思考中</span>}
         </div>
         <p>{game.message}</p>
+        {cpuError && <p className="cpu-error">{cpuError}</p>}
         {game.pendingForcedMove && (
           <p>
             {getPlayerLabel(game.pendingForcedMove.player)}が挟んだ
@@ -199,11 +449,14 @@ export default function GamePage() {
       <section className="game-layout" aria-label="シンペイ盤面">
         <IntegratedBoard
           game={game}
+          boardRef={boardRef}
+          pointRefs={pointRefs}
           selectedPiece={selectedPiece}
           legalPlacementTargets={legalPlacementTargets}
           legalMoveTargets={legalMoveTargets}
           forcedMoveTargets={forcedMoveTargets}
           forcedPieceId={forcedPiece?.from}
+          flyingPiece={flyingPiece}
           movablePieces={movablePieces}
           uiEffect={uiEffect}
           onPointClick={handlePointClick}
@@ -215,15 +468,30 @@ export default function GamePage() {
         <button
           type="button"
           onClick={handlePass}
-          disabled={game.phase !== "movement" || game.winner || game.pendingForcedMove || movablePieces.size > 0}
+          disabled={game.phase !== "movement" || game.winner || game.pendingForcedMove || movablePieces.size > 0 || isCpuTurn(game)}
         >
           パス
         </button>
+        <label className="cpu-toggle">
+          <input
+            type="checkbox"
+            checked={cpuMode}
+            onChange={handleCpuModeChange}
+            disabled={cpuThinking}
+          />
+          CPU対戦
+        </label>
         <div>
           <strong>残り手駒</strong>
           <span>赤 {4 - game.placedCount[PLAYERS.RED]} 個</span>
           <span>青 {4 - game.placedCount[PLAYERS.BLUE]} 個</span>
         </div>
+        {cpuMode && matchId && (
+          <div>
+            <strong>CPU履歴</strong>
+            <span>{moveHistory.length} 手</span>
+          </div>
+        )}
       </section>
     </main>
   );
@@ -231,11 +499,14 @@ export default function GamePage() {
 
 function IntegratedBoard({
   game,
+  boardRef,
+  pointRefs,
   selectedPiece,
   legalPlacementTargets,
   legalMoveTargets,
   forcedMoveTargets,
   forcedPieceId,
+  flyingPiece,
   movablePieces,
   uiEffect,
   onPointClick,
@@ -243,7 +514,7 @@ function IntegratedBoard({
   return (
     <section className="integrated-board-panel">
       <h2>ボード</h2>
-      <div className="simpei-board">
+      <div className="simpei-board" ref={boardRef}>
         {Array.from({ length: 4 }, (_, index) => (
           <span
             key={`h-${index}`}
@@ -301,11 +572,18 @@ function IntegratedBoard({
                 gridColumn: gridPosition.col,
               }}
               onClick={() => onPointClick(id)}
+              ref={(element) => {
+                if (element) {
+                  pointRefs.current.set(id, element);
+                } else {
+                  pointRefs.current.delete(id);
+                }
+              }}
               aria-label={occupant ? `${label}: ${getPlayerLabel(occupant)}の駒` : `${label}: 空き`}
             >
               <span className="point-hole" />
               {isLegalTarget && !occupant && <span className="target-marker" />}
-              {occupant && (
+              {occupant && flyingPiece?.from !== id && (
                 <span className="piece">
                   <span className="piece-head">{getPlayerLabel(occupant)}</span>
                   <span className="piece-stem" />
@@ -315,6 +593,24 @@ function IntegratedBoard({
             </button>
           );
         })}
+        {flyingPiece && (
+          <span
+            className={`flying-piece ${flyingPiece.player}`}
+            style={{
+              left: flyingPiece.left,
+              top: flyingPiece.top,
+              width: flyingPiece.size,
+              "--fly-x": `${flyingPiece.deltaX}px`,
+              "--fly-y": `${flyingPiece.deltaY}px`,
+            }}
+            aria-hidden="true"
+          >
+            <span className="piece">
+              <span className="piece-head">{getPlayerLabel(flyingPiece.player)}</span>
+              <span className="piece-stem" />
+            </span>
+          </span>
+        )}
       </div>
     </section>
   );

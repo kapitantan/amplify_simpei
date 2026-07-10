@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  ACTION_TYPES,
   PLAYERS,
   WORLDS,
+  applyAction,
   createInitialGame,
   findSandwichedPieces,
   forceMovePiece,
+  getActionKey,
   getAdjacentPositions,
   getForcedMoveTargets,
+  getLegalActions,
   getLegalPlacementTargets,
   getMovablePieces,
   getPositionId,
   hasExactWinningLine,
+  isLegalAction,
   movePiece,
   passTurn,
   placePiece,
@@ -50,6 +55,27 @@ describe("simpei rules", () => {
     const rejected = placePiece(state, getPositionId(WORLDS.UPPER, 0, 0));
     assert.equal(rejected.board[getPositionId(WORLDS.UPPER, 0, 0)], null);
     assert.equal(rejected.currentPlayer, PLAYERS.RED);
+  });
+
+  it("lists and applies legal placement actions", () => {
+    const state = createInitialGame();
+    const actions = getLegalActions(state);
+
+    assert.deepEqual(new Set(actions.map((action) => action.type)), new Set([ACTION_TYPES.PLACE]));
+    assert.deepEqual(new Set(actions.map((action) => action.to)), new Set([
+      getPositionId(WORLDS.UPPER, 1, 1),
+      getPositionId(WORLDS.UPPER, 1, 2),
+      getPositionId(WORLDS.UPPER, 2, 1),
+      getPositionId(WORLDS.UPPER, 2, 2),
+    ]));
+
+    const action = { type: ACTION_TYPES.PLACE, to: getPositionId(WORLDS.UPPER, 1, 1) };
+    assert.equal(isLegalAction(state, action), true);
+    assert.equal(getActionKey(action), "place::upper-1-1");
+
+    const nextState = applyAction(state, action);
+    assert.equal(nextState.board[getPositionId(WORLDS.UPPER, 1, 1)], PLAYERS.RED);
+    assert.equal(nextState.currentPlayer, PLAYERS.BLUE);
   });
 
   it("switches to movement after eight placements", () => {
@@ -137,6 +163,31 @@ describe("simpei rules", () => {
     const moved = movePiece(state, from, getPositionId(WORLDS.LOWER, 1, 1));
     assert.equal(moved.board[from], null);
     assert.equal(moved.board[getPositionId(WORLDS.LOWER, 1, 1)], PLAYERS.RED);
+  });
+
+  it("lists move actions or pass actions in movement phase", () => {
+    const state = fillPlacementWithoutWinner();
+    const moveActions = getLegalActions(state);
+
+    assert.equal(moveActions.every((action) => action.type === ACTION_TYPES.MOVE), true);
+    assert.equal(moveActions.some((action) => action.from === getPositionId(WORLDS.UPPER, 1, 1)), true);
+
+    const blockedState = {
+      ...state,
+      board: {
+        ...state.board,
+        [getPositionId(WORLDS.UPPER, 0, 1)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.UPPER, 1, 0)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.UPPER, 2, 2)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.UPPER, 2, 3)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.UPPER, 3, 2)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.LOWER, 0, 1)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.LOWER, 1, 0)]: PLAYERS.BLUE,
+        [getPositionId(WORLDS.LOWER, 1, 1)]: PLAYERS.BLUE,
+      },
+    };
+
+    assert.deepEqual(getLegalActions(blockedState), [{ type: ACTION_TYPES.PASS }]);
   });
 
   it("uses the overlaid board adjacency between upper corners, edges, centers, and lower points", () => {
@@ -243,6 +294,7 @@ describe("simpei rules", () => {
 
     assert.equal(state.pendingForcedMove.pieces[0].from, getPositionId(WORLDS.LOWER, 1, 1));
     assert.equal(getForcedMoveTargets(state).includes(getPositionId(WORLDS.LOWER, 1, 1)), false);
+    assert.equal(getLegalActions(state).every((action) => action.type === ACTION_TYPES.FORCE_MOVE), true);
 
     state = forceMovePiece(state, getPositionId(WORLDS.LOWER, 0, 0));
     assert.equal(state.winner, null);

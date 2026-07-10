@@ -8,6 +8,13 @@ export const WORLDS = {
   LOWER: "lower",
 };
 
+export const ACTION_TYPES = {
+  PLACE: "place",
+  MOVE: "move",
+  FORCE_MOVE: "forceMove",
+  PASS: "pass",
+};
+
 const WORLD_SIZES = {
   [WORLDS.UPPER]: 4,
   [WORLDS.LOWER]: 3,
@@ -143,6 +150,74 @@ export function getForcedMoveTargets(state) {
   }
 
   return POSITIONS.filter(({ id }) => id !== forcedPiece.from && !state.board[id]).map(({ id }) => id);
+}
+
+export function getLegalActions(state) {
+  if (state.winner) {
+    return [];
+  }
+
+  if (state.pendingForcedMove) {
+    const forcedPiece = state.pendingForcedMove.pieces[0];
+    return getForcedMoveTargets(state).map((to) => ({
+      type: ACTION_TYPES.FORCE_MOVE,
+      from: forcedPiece.from,
+      to,
+    }));
+  }
+
+  if (state.phase === "placement") {
+    return getLegalPlacementTargets(state).map((to) => ({
+      type: ACTION_TYPES.PLACE,
+      to,
+    }));
+  }
+
+  const moveActions = getMovablePieces(state).flatMap((from) => (
+    getLegalMoveTargets(state, from).map((to) => ({
+      type: ACTION_TYPES.MOVE,
+      from,
+      to,
+    }))
+  ));
+
+  if (moveActions.length > 0) {
+    return moveActions;
+  }
+
+  return [{ type: ACTION_TYPES.PASS }];
+}
+
+export function applyAction(state, action) {
+  if (!action) {
+    return withMessage(state, "手が選択されていません。");
+  }
+
+  switch (action.type) {
+    case ACTION_TYPES.PLACE:
+      return placePiece(state, action.to);
+    case ACTION_TYPES.MOVE:
+      return movePiece(state, action.from, action.to);
+    case ACTION_TYPES.FORCE_MOVE:
+      return forceMovePiece(state, action.to);
+    case ACTION_TYPES.PASS:
+      return passTurn(state);
+    default:
+      return withMessage(state, "未対応の手です。");
+  }
+}
+
+export function isLegalAction(state, action) {
+  const actionKey = getActionKey(action);
+  return Boolean(actionKey) && getLegalActions(state).some((legalAction) => getActionKey(legalAction) === actionKey);
+}
+
+export function getActionKey(action) {
+  if (!action?.type) {
+    return "";
+  }
+
+  return [action.type, action.from ?? "", action.to ?? ""].join(":");
 }
 
 export function placePiece(state, toId) {

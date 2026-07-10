@@ -27,3 +27,9 @@ dist-ssr
 .amplify
 amplify_outputs*
 amplifyconfiguration*
+
+# Python / local CPU server
+.pytest_cache
+__pycache__
+*.py[cod]
+server/data/

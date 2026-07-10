@@ -77,6 +77,25 @@
   cursor: not-allowed;
 }
 
+.cpu-toggle {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.cpu-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 .game-status {
   border: 1px solid #cbd5e1;
   border-radius: 8px;
@@ -88,6 +107,11 @@
 .game-status p {
   margin: 10px 0 0;
   color: #475569;
+}
+
+.game-status .cpu-error {
+  color: #b91c1c;
+  font-weight: 700;
 }
 
 .player-dot {
@@ -243,6 +267,22 @@
   animation: piece-land 140ms ease-out;
 }
 
+.flying-piece {
+  position: absolute;
+  z-index: 5;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: forced-piece-flight 540ms cubic-bezier(0.2, 0, 0.2, 1) forwards;
+}
+
+.flying-piece .piece {
+  width: 84%;
+  animation: forced-piece-glide 540ms cubic-bezier(0.2, 0, 0.2, 1) forwards;
+}
+
 .lower-point .piece {
   width: 88%;
 }
@@ -324,6 +364,20 @@
 }
 
 .board-point.blue .piece {
+  --piece-light: #5b7dff;
+  --piece-mid: #263fb4;
+  --piece-dark: #151f73;
+  --piece-glint: #c7d2fe;
+}
+
+.flying-piece.red .piece {
+  --piece-light: #ff7a72;
+  --piece-mid: #dc2626;
+  --piece-dark: #991b1b;
+  --piece-glint: #fecaca;
+}
+
+.flying-piece.blue .piece {
   --piece-light: #5b7dff;
   --piece-mid: #263fb4;
   --piece-dark: #151f73;
@@ -574,6 +628,24 @@
   }
   100% {
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes forced-piece-flight {
+  0% {
+    transform: translate(-50%, -50%) translate(0, 0) scale(1);
+  }
+  100% {
+    transform: translate(-50%, -50%) translate(var(--fly-x), var(--fly-y)) scale(1);
+  }
+}
+
+@keyframes forced-piece-glide {
+  0% {
+    transform: scale(1) rotate(-4deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
   }
 }
 
