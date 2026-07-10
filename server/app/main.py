@@ -31,6 +31,8 @@ ALLOWED_ORIGIN_REGEX = os.getenv(
 )
 LLM_TOP_CANDIDATES = int(os.getenv("SIMPEI_LLM_TOP_CANDIDATES", "5"))
 HEURISTIC_MARGIN = int(os.getenv("SIMPEI_HEURISTIC_MARGIN", "80"))
+FEEDBACK_LOSS_PENALTY = int(os.getenv("SIMPEI_FEEDBACK_LOSS_PENALTY", "240"))
+FEEDBACK_WIN_BONUS = int(os.getenv("SIMPEI_FEEDBACK_WIN_BONUS", "35"))
 
 PLAYERS = {"red", "blue"}
 ACTION_PLACE = "place"
@@ -179,17 +181,21 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
         raise HTTPException(status_code=400, detail="legal_actions must not be empty")
 
     started_at = time.perf_counter()
-    candidate_evaluations = evaluate_candidates(request)
+    cache_key = build_cache_key(request)
+    candidate_evaluations = evaluate_candidates(request, cache_key)
     ranked_actions = [evaluation["action"] for evaluation in candidate_evaluations] or request.legal_actions
     selected_action = ranked_actions[0]
     reason = "Heuristic fallback: selected the highest-scored legal action."
     fallback = True
     source = "heuristic"
     cache_hit = False
-    cache_key = build_cache_key(request)
 
     cached_action = MOVE_CACHE.get(cache_key) or load_cached_action(cache_key)
-    if cached_action and is_legal_action(cached_action["selected_action"], request.legal_actions):
+    if (
+        cached_action
+        and is_legal_action(cached_action["selected_action"], request.legal_actions)
+        and is_cached_action_usable(cache_key, cached_action["selected_action"])
+    ):
         selected_action = cached_action["selected_action"]
         reason = cached_action["reason"]
         fallback = bool(cached_action["fallback"])
@@ -269,6 +275,19 @@ def record_result(match_id: str, request: ResultRequest) -> dict[str, str]:
             "UPDATE moves SET outcome = ? WHERE match_id = ? AND actor = 'cpu'",
             (cpu_outcome, match_id),
         )
+        cpu_moves = db.execute(
+            """
+            SELECT cache_key, action_json
+            FROM moves
+            WHERE match_id = ? AND actor = 'cpu' AND cache_key IS NOT NULL
+            """,
+            (match_id,),
+        ).fetchall()
+        for move in cpu_moves:
+            action = json.loads(move["action_json"])
+            record_move_feedback(db, move["cache_key"], action, cpu_outcome)
+            if cpu_outcome == "loss":
+                invalidate_cached_action(db, move["cache_key"])
     return {"status": "recorded"}
 
 
@@ -359,6 +378,18 @@ def init_database() -> None:
               fallback INTEGER NOT NULL,
               source TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS move_feedback (
+              cache_key TEXT NOT NULL,
+              action_key TEXT NOT NULL,
+              model TEXT NOT NULL,
+              wins INTEGER NOT NULL DEFAULT 0,
+              losses INTEGER NOT NULL DEFAULT 0,
+              draws INTEGER NOT NULL DEFAULT 0,
+              last_outcome TEXT,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (cache_key, action_key)
+            );
             """
         )
         ensure_column(db, "moves", "candidate_evaluations_json", "TEXT")
@@ -434,12 +465,13 @@ def action_key(action: dict[str, Any]) -> tuple[str | None, str | None, str | No
     return action.get("type"), action.get("from"), action.get("to")
 
 
-def evaluate_candidates(request: CpuMoveRequest) -> list[dict[str, Any]]:
+def evaluate_candidates(request: CpuMoveRequest, cache_key: str) -> list[dict[str, Any]]:
     candidates = request.candidate_actions or [
         CandidateAction(action=action, next_state={})
         for action in request.legal_actions
     ]
     opponent = get_opponent(request.cpu_player)
+    feedback_by_action = load_feedback_for_cache(cache_key)
     evaluations = []
 
     for index, candidate in enumerate(candidates):
@@ -450,6 +482,12 @@ def evaluate_candidates(request: CpuMoveRequest) -> list[dict[str, Any]]:
             cpu_player=request.cpu_player,
             opponent=opponent,
         )
+        feedback = feedback_by_action.get(action_key_text(candidate.action), {})
+        feedback_score = calculate_feedback_score(feedback)
+        if feedback_score:
+            score += feedback_score
+            features["feedback_score"] = feedback_score
+            features["feedback"] = feedback
         evaluations.append({
             "action": candidate.action,
             "score": score,
@@ -619,6 +657,10 @@ def get_cpu_outcome(winner: str | None, cpu_player: str | None) -> str:
 
 
 def action_sort_key(action: dict[str, Any]) -> str:
+    return action_key_text(action)
+
+
+def action_key_text(action: dict[str, Any]) -> str:
     return ":".join(str(part or "") for part in action_key(action))
 
 
@@ -667,6 +709,13 @@ def load_cached_action(cache_key: str) -> dict[str, Any] | None:
     }
 
 
+def is_cached_action_usable(cache_key: str, action: dict[str, Any]) -> bool:
+    feedback = load_feedback_for_cache(cache_key).get(action_key_text(action))
+    if not feedback:
+        return True
+    return feedback["losses"] <= feedback["wins"]
+
+
 def save_cached_action(cache_key: str, response: CpuMoveResponse) -> None:
     MOVE_CACHE[cache_key] = {
         "selected_action": response.selected_action,
@@ -691,6 +740,68 @@ def save_cached_action(cache_key: str, response: CpuMoveResponse) -> None:
                 response.source,
             ),
         )
+
+
+def invalidate_cached_action(db: sqlite3.Connection, cache_key: str) -> None:
+    MOVE_CACHE.pop(cache_key, None)
+    db.execute("DELETE FROM move_cache WHERE cache_key = ?", (cache_key,))
+
+
+def load_feedback_for_cache(cache_key: str) -> dict[str, dict[str, int]]:
+    with connect() as db:
+        rows = db.execute(
+            """
+            SELECT action_key, wins, losses, draws
+            FROM move_feedback
+            WHERE cache_key = ?
+            """,
+            (cache_key,),
+        ).fetchall()
+    return {
+        row["action_key"]: {
+            "wins": row["wins"],
+            "losses": row["losses"],
+            "draws": row["draws"],
+        }
+        for row in rows
+    }
+
+
+def calculate_feedback_score(feedback: dict[str, int]) -> int:
+    wins = feedback.get("wins", 0)
+    losses = feedback.get("losses", 0)
+    draws = feedback.get("draws", 0)
+    return wins * FEEDBACK_WIN_BONUS + draws * 5 - losses * FEEDBACK_LOSS_PENALTY
+
+
+def record_move_feedback(db: sqlite3.Connection, cache_key: str, action: dict[str, Any], outcome: str) -> None:
+    action_key_value = action_key_text(action)
+    win_delta = 1 if outcome == "win" else 0
+    loss_delta = 1 if outcome == "loss" else 0
+    draw_delta = 1 if outcome == "draw" else 0
+    db.execute(
+        """
+        INSERT INTO move_feedback (
+          cache_key, action_key, model, wins, losses, draws, last_outcome, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(cache_key, action_key) DO UPDATE SET
+          wins = wins + excluded.wins,
+          losses = losses + excluded.losses,
+          draws = draws + excluded.draws,
+          last_outcome = excluded.last_outcome,
+          updated_at = datetime('now')
+        """,
+        (
+            cache_key,
+            action_key_value,
+            OLLAMA_MODEL,
+            win_delta,
+            loss_delta,
+            draw_delta,
+            outcome,
+        ),
+    )
 
 
 def ensure_column(db: sqlite3.Connection, table: str, column: str, column_type: str) -> None:

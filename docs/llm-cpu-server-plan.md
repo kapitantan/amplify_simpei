@@ -32,6 +32,8 @@ CPU は LLM に毎手丸投げしない。
 レスポンス高速化:
 
 - 同じ局面・合法手・モデル・難易度では `move_cache` から同じ手を返す。
+- 負けた対戦の CPU 手は `move_feedback` に記録し、その手の `move_cache` は無効化する。
+- 同じ局面が再度出た場合、負けた action は評価スコアで減点される。
 - 明確な最善手は Ollama を呼ばない。
 - Ollama に渡す候補は上位だけに絞る。
 - Ollama には `keep_alive` を指定してモデル再ロードを減らす。
@@ -42,10 +44,14 @@ CPU は LLM に毎手丸投げしない。
 ```sh
 SIMPEI_LLM_TOP_CANDIDATES=5
 SIMPEI_HEURISTIC_MARGIN=80
+SIMPEI_FEEDBACK_LOSS_PENALTY=240
+SIMPEI_FEEDBACK_WIN_BONUS=35
 ```
 
 `SIMPEI_HEURISTIC_MARGIN` は、1位と2位の評価差がこの値以上なら LLM を呼ばずに評価器だけで決める閾値。
 値を小さくすると速くなるが、LLM が判断する場面は減る。
+`SIMPEI_FEEDBACK_LOSS_PENALTY` は、過去に負けにつながった同一局面・同一 action への減点。
+`SIMPEI_FEEDBACK_WIN_BONUS` は、勝ちにつながった action への加点。
 
 ## 採用モデル
 
@@ -457,6 +463,7 @@ FastAPI と Ollama 到達性を確認する。
 - `matches`: 対戦ID、開始/終了時刻、人間/CPUの色、難易度、モデル、勝者、最終盤面
 - `moves`: 手番、手番プレイヤー、合法手一覧、選択手、適用前後の局面、候補評価、選択元、LLM理由、モデル、レイテンシ、終局後のCPU勝敗ラベル
 - `move_cache`: 局面・合法手・モデル・難易度ごとの選択手キャッシュ
+- `move_feedback`: 局面 cache key と action ごとの勝ち/負け/引き分け回数
 
 確認例:
 
@@ -465,6 +472,7 @@ sqlite3 server/data/simpei_cpu.sqlite3 'select id, winner, result_reason from ma
 sqlite3 server/data/simpei_cpu.sqlite3 'select match_id, actor, player, turn_number, action_json from moves;'
 sqlite3 server/data/simpei_cpu.sqlite3 'select actor, source, outcome, latency_ms, reason from moves order by id desc limit 10;'
 sqlite3 server/data/simpei_cpu.sqlite3 'select count(*) from move_cache;'
+sqlite3 server/data/simpei_cpu.sqlite3 'select action_key, wins, losses, draws, last_outcome from move_feedback order by updated_at desc limit 10;'
 ```
 
 候補評価を見る例:
@@ -476,6 +484,7 @@ sqlite3 server/data/simpei_cpu.sqlite3 \
 
 この JSON に各候補の `score` と `features` が保存される。
 負けた対戦では `outcome = 'loss'` の CPU 手を見て、低く評価しすぎた相手脅威や高く評価しすぎた特徴を確認する。
+終局結果が loss の場合、該当 CPU 手の cache は削除され、次回同じ局面では `move_feedback` による減点が入る。
 
 ## 今後の拡張
 
