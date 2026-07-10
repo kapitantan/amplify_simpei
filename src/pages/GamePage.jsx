@@ -54,6 +54,9 @@ export default function GamePage() {
   const forcedMoveTimeoutRef = useRef(null);
   const cpuModeRef = useRef(false);
   const autoLearnModeRef = useRef(false);
+  const cpuThinkingRef = useRef(false);
+  const pendingCpuTurnRef = useRef(null);
+  const gameRef = useRef(game);
   const matchIdRef = useRef(null);
   const historyRef = useRef([]);
   const resultRecordedRef = useRef(false);
@@ -76,6 +79,11 @@ export default function GamePage() {
       window.clearTimeout(forcedMoveTimeoutRef.current);
     };
   }, []);
+
+  function setCurrentGame(nextGame) {
+    gameRef.current = nextGame;
+    setGame(nextGame);
+  }
 
   function playEffect(action, durationMs) {
     window.clearTimeout(effectTimeoutRef.current);
@@ -148,7 +156,7 @@ export default function GamePage() {
   }
 
   function updateGame(nextGame, previousGame = game) {
-    setGame(nextGame);
+    setCurrentGame(nextGame);
     if (nextGame.pendingForcedMove || nextGame.winner || nextGame.phase !== "movement") {
       setSelectedPiece(null);
     } else if (selectedPiece && nextGame.board[selectedPiece] !== nextGame.currentPlayer) {
@@ -157,7 +165,7 @@ export default function GamePage() {
 
     handleCompletedGame(nextGame);
 
-    if (cpuMode) {
+    if (cpuModeRef.current) {
       queueCpuTurn(nextGame, previousGame);
     }
   }
@@ -239,8 +247,14 @@ export default function GamePage() {
     return { nextGame, nextHistory };
   }
 
-  function queueCpuTurn(nextGame, previousGame = game) {
-    if (!isCpuTurn(nextGame) || cpuThinking) {
+  function queueCpuTurn(nextGame, previousGame = gameRef.current) {
+    if (!isCpuTurn(nextGame)) {
+      pendingCpuTurnRef.current = null;
+      return;
+    }
+
+    if (cpuThinkingRef.current) {
+      pendingCpuTurnRef.current = { nextGame, previousGame };
       return;
     }
 
@@ -253,10 +267,11 @@ export default function GamePage() {
   async function playCpuTurn(cpuGame) {
     const currentMatchId = matchIdRef.current;
     const cpuLegalActions = getLegalActions(cpuGame);
-    if (!currentMatchId || cpuLegalActions.length === 0 || !isCpuTurn(cpuGame)) {
+    if (cpuThinkingRef.current || !currentMatchId || cpuLegalActions.length === 0 || !isCpuTurn(cpuGame)) {
       return;
     }
 
+    cpuThinkingRef.current = true;
     setCpuThinking(true);
     setCpuError("");
 
@@ -290,7 +305,7 @@ export default function GamePage() {
           reason: response.reason,
           fallback: response.fallback,
         });
-        setGame(nextGame);
+        setCurrentGame(nextGame);
         setSelectedPiece(null);
         if (selectedAction.type !== ACTION_TYPES.FORCE_MOVE) {
           playEffect({ type: getActionEffectType(selectedAction), id: selectedAction.to ?? selectedAction.from }, 240);
@@ -310,7 +325,13 @@ export default function GamePage() {
     } catch (error) {
       setCpuError(error instanceof Error ? error.message : "CPU手番でエラーが発生しました。");
     } finally {
+      cpuThinkingRef.current = false;
       setCpuThinking(false);
+      const pendingCpuTurn = pendingCpuTurnRef.current;
+      pendingCpuTurnRef.current = null;
+      if (pendingCpuTurn) {
+        queueCpuTurn(pendingCpuTurn.nextGame, pendingCpuTurn.previousGame);
+      }
     }
   }
 
@@ -379,7 +400,7 @@ export default function GamePage() {
 
   function startFreshMatch() {
     const nextGame = createInitialGame();
-    setGame(nextGame);
+    setCurrentGame(nextGame);
     setSelectedPiece(null);
     setMoveHistory([]);
     historyRef.current = [];
@@ -392,7 +413,7 @@ export default function GamePage() {
       selectedCell: null,
     });
 
-    if (cpuMode) {
+    if (cpuModeRef.current) {
       startCpuMatch(nextGame);
     }
   }
@@ -411,12 +432,14 @@ export default function GamePage() {
       autoLearnModeRef.current = false;
       setAutoLearnMode(false);
       window.clearTimeout(autoLearnTimeoutRef.current);
+      window.clearTimeout(cpuTimeoutRef.current);
+      pendingCpuTurnRef.current = null;
       matchIdRef.current = null;
       setMatchId(null);
       return;
     }
 
-    await startCpuMatch(game);
+    await startCpuMatch(gameRef.current);
   }
 
   async function handleAutoLearnModeChange(event) {
@@ -433,11 +456,11 @@ export default function GamePage() {
     if (!cpuModeRef.current) {
       cpuModeRef.current = true;
       setCpuMode(true);
-      await startCpuMatch(game);
-    } else if (game.winner) {
+      await startCpuMatch(gameRef.current);
+    } else if (gameRef.current.winner) {
       queueAutoLearnRestart();
     } else {
-      queueCpuTurn(game, game);
+      queueCpuTurn(gameRef.current, gameRef.current);
     }
   }
 
