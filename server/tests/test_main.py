@@ -309,6 +309,54 @@ def test_losing_cached_move_is_invalidated_and_penalized(tmp_path, monkeypatch):
     assert cache_count["count"] == 1
 
 
+def test_draw_cached_move_is_invalidated_and_penalized(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    match_id = client.post("/matches", json={"human_player": "none", "cpu_player": "both"}).json()["match_id"]
+    legal_actions = [
+        {"type": "place", "to": "upper-1-1"},
+        {"type": "place", "to": "upper-1-2"},
+    ]
+    payload = {
+        "match_id": match_id,
+        "game_state": {"turnNumber": 1, "board": {}, "currentPlayer": "red"},
+        "legal_actions": legal_actions,
+        "candidate_actions": [
+            {
+                "action": legal_actions[0],
+                "next_state": {"winner": None, "pendingForcedMove": None, "board": {"upper-1-1": "red"}},
+            },
+            {
+                "action": legal_actions[1],
+                "next_state": {"winner": None, "pendingForcedMove": None, "board": {"upper-1-2": "red"}},
+            },
+        ],
+        "cpu_player": "red",
+    }
+
+    first = client.post("/cpu/move", json=payload)
+    result = client.patch(
+        f"/matches/{match_id}/result",
+        json={"winner": None, "reason": "draw:repetition", "final_state": {"drawReason": "repetition"}},
+    )
+    second_payload = {**payload, "match_id": None}
+    second = client.post("/cpu/move", json=second_payload)
+
+    assert first.status_code == 200
+    assert result.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["selected_action"] == legal_actions[0]
+    assert second.json()["cache_hit"] is False
+    assert second.json()["selected_action"] == legal_actions[1]
+
+    with module.connect() as db:
+        feedback = db.execute("SELECT draws FROM move_feedback").fetchone()
+        cache_count = db.execute("SELECT COUNT(*) AS count FROM move_cache").fetchone()
+
+    assert feedback["draws"] == 1
+    assert cache_count["count"] == 1
+
+
 def test_records_human_move_and_result(tmp_path, monkeypatch):
     module = load_app(tmp_path, monkeypatch)
     client = TestClient(module.app)

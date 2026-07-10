@@ -33,6 +33,7 @@ LLM_TOP_CANDIDATES = int(os.getenv("SIMPEI_LLM_TOP_CANDIDATES", "5"))
 HEURISTIC_MARGIN = int(os.getenv("SIMPEI_HEURISTIC_MARGIN", "80"))
 FEEDBACK_LOSS_PENALTY = int(os.getenv("SIMPEI_FEEDBACK_LOSS_PENALTY", "240"))
 FEEDBACK_WIN_BONUS = int(os.getenv("SIMPEI_FEEDBACK_WIN_BONUS", "35"))
+FEEDBACK_DRAW_PENALTY = int(os.getenv("SIMPEI_FEEDBACK_DRAW_PENALTY", "20"))
 HEURISTIC_VERSION = "tactical-v2"
 
 PLAYERS = {"red", "blue"}
@@ -291,7 +292,7 @@ def record_result(match_id: str, request: ResultRequest) -> dict[str, str]:
                 continue
             action = json.loads(move["action_json"])
             record_move_feedback(db, move["cache_key"], action, move_outcome)
-            if move_outcome == "loss":
+            if move_outcome in {"loss", "draw"}:
                 invalidate_cached_action(db, move["cache_key"])
     return {"status": "recorded"}
 
@@ -914,7 +915,7 @@ def is_cached_action_usable(cache_key: str, action: dict[str, Any]) -> bool:
     feedback = load_feedback_for_cache(cache_key).get(action_key_text(action))
     if not feedback:
         return True
-    return feedback["losses"] <= feedback["wins"]
+    return calculate_feedback_score(feedback) >= 0
 
 
 def save_cached_action(cache_key: str, response: CpuMoveResponse) -> None:
@@ -972,7 +973,7 @@ def calculate_feedback_score(feedback: dict[str, int]) -> int:
     wins = feedback.get("wins", 0)
     losses = feedback.get("losses", 0)
     draws = feedback.get("draws", 0)
-    return wins * FEEDBACK_WIN_BONUS + draws * 5 - losses * FEEDBACK_LOSS_PENALTY
+    return wins * FEEDBACK_WIN_BONUS - draws * FEEDBACK_DRAW_PENALTY - losses * FEEDBACK_LOSS_PENALTY
 
 
 def record_move_feedback(db: sqlite3.Connection, cache_key: str, action: dict[str, Any], outcome: str) -> None:

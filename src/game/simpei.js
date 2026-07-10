@@ -66,6 +66,7 @@ export function createInitialGame() {
     pendingForcedMove: null,
     winner: null,
     winningLine: null,
+    drawReason: null,
     message: "赤の1手目です。上の世界の中央4か所に置いてください。",
   };
 }
@@ -79,7 +80,7 @@ export function getPlayerLabel(player) {
 }
 
 export function getLegalPlacementTargets(state) {
-  if (state.phase !== "placement" || state.winner || state.pendingForcedMove) {
+  if (state.phase !== "placement" || isTerminal(state) || state.pendingForcedMove) {
     return [];
   }
 
@@ -122,7 +123,7 @@ export function getAdjacentPositions(id) {
 }
 
 export function getLegalMoveTargets(state, fromId) {
-  if (state.phase !== "movement" || state.winner || state.pendingForcedMove) {
+  if (state.phase !== "movement" || isTerminal(state) || state.pendingForcedMove) {
     return [];
   }
 
@@ -134,7 +135,7 @@ export function getLegalMoveTargets(state, fromId) {
 }
 
 export function getMovablePieces(state, player = state.currentPlayer) {
-  if (state.phase !== "movement" || state.winner || state.pendingForcedMove) {
+  if (state.phase !== "movement" || isTerminal(state) || state.pendingForcedMove) {
     return [];
   }
 
@@ -145,7 +146,7 @@ export function getMovablePieces(state, player = state.currentPlayer) {
 
 export function getForcedMoveTargets(state) {
   const forcedPiece = state.pendingForcedMove?.pieces[0];
-  if (!forcedPiece || state.winner) {
+  if (!forcedPiece || isTerminal(state)) {
     return [];
   }
 
@@ -153,7 +154,7 @@ export function getForcedMoveTargets(state) {
 }
 
 export function getLegalActions(state) {
-  if (state.winner) {
+  if (isTerminal(state)) {
     return [];
   }
 
@@ -189,6 +190,10 @@ export function getLegalActions(state) {
 }
 
 export function applyAction(state, action) {
+  if (isTerminal(state)) {
+    return withMessage(state, "対局は終了しています。");
+  }
+
   if (!action) {
     return withMessage(state, "手が選択されていません。");
   }
@@ -218,6 +223,19 @@ export function getActionKey(action) {
   }
 
   return [action.type, action.from ?? "", action.to ?? ""].join(":");
+}
+
+export function markDraw(state, reason) {
+  const message = reason === "repetition"
+    ? "同じ局面が3回出たため引き分けです。"
+    : "手数上限に達したため引き分けです。";
+
+  return {
+    ...state,
+    pendingForcedMove: null,
+    drawReason: reason,
+    message,
+  };
 }
 
 export function placePiece(state, toId) {
@@ -259,7 +277,7 @@ export function movePiece(state, fromId, toId) {
 }
 
 export function passTurn(state) {
-  if (state.phase !== "movement" || state.winner || state.pendingForcedMove) {
+  if (state.phase !== "movement" || isTerminal(state) || state.pendingForcedMove) {
     return withMessage(state, "今はパスできません。");
   }
 
@@ -424,6 +442,10 @@ function switchTurn(state, completedActionMessage = "") {
       `${getPlayerLabel(currentPlayer)}の${turnNumber}手目です。`,
     ].filter(Boolean).join(" "),
   };
+}
+
+function isTerminal(state) {
+  return Boolean(state.winner || state.drawReason);
 }
 
 function getWinningLines(world) {

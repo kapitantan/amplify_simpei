@@ -13,6 +13,7 @@ import {
   getMovablePieces,
   getPlayerLabel,
   isLegalAction,
+  markDraw,
 } from "../game/simpei";
 import {
   createCpuMatch,
@@ -26,6 +27,8 @@ const CPU_PLAYER = PLAYERS.BLUE;
 const CPU_DIFFICULTY = "normal";
 const AUTO_LEARN_RESTART_DELAY_MS = 900;
 const CPU_TURN_DELAY_MS = 360;
+const REPETITION_DRAW_COUNT = 3;
+const MAX_MATCH_HISTORY_LENGTH = 180;
 
 export default function GamePage() {
   const [game, setGame] = useState(() => createInitialGame());
@@ -40,6 +43,7 @@ export default function GamePage() {
     games: 0,
     redWins: 0,
     blueWins: 0,
+    draws: 0,
   });
   const [flyingPiece, setFlyingPiece] = useState(null);
   const [uiEffect, setUiEffect] = useState({
@@ -59,6 +63,7 @@ export default function GamePage() {
   const gameRef = useRef(game);
   const matchIdRef = useRef(null);
   const historyRef = useRef([]);
+  const stateVisitCountsRef = useRef(new Map([[getStateRepetitionKey(game), 1]]));
   const resultRecordedRef = useRef(false);
   const boardRef = useRef(null);
   const pointRefs = useRef(new Map());
@@ -70,6 +75,7 @@ export default function GamePage() {
     selectedPiece ? new Set(getLegalMoveTargets(game, selectedPiece)) : new Set()
   ), [game, selectedPiece]);
   const forcedPiece = game.pendingForcedMove?.pieces[0] ?? null;
+  const isCpuTurnInView = cpuMode && !isTerminalGame(game) && (autoLearnMode || game.currentPlayer === CPU_PLAYER);
 
   useEffect(() => {
     return () => {
@@ -83,6 +89,12 @@ export default function GamePage() {
   function setCurrentGame(nextGame) {
     gameRef.current = nextGame;
     setGame(nextGame);
+  }
+
+  function resetStateVisits(initialGame) {
+    const visits = new Map();
+    visits.set(getStateRepetitionKey(initialGame), 1);
+    stateVisitCountsRef.current = visits;
   }
 
   function playEffect(action, durationMs) {
@@ -157,7 +169,7 @@ export default function GamePage() {
 
   function updateGame(nextGame, previousGame = game) {
     setCurrentGame(nextGame);
-    if (nextGame.pendingForcedMove || nextGame.winner || nextGame.phase !== "movement") {
+    if (nextGame.pendingForcedMove || isTerminalGame(nextGame) || nextGame.phase !== "movement") {
       setSelectedPiece(null);
     } else if (selectedPiece && nextGame.board[selectedPiece] !== nextGame.currentPlayer) {
       setSelectedPiece(null);
@@ -171,7 +183,7 @@ export default function GamePage() {
   }
 
   function handleCompletedGame(nextGame) {
-    if (!cpuModeRef.current || !nextGame.winner || !matchIdRef.current || resultRecordedRef.current) {
+    if (!cpuModeRef.current || !isTerminalGame(nextGame) || !matchIdRef.current || resultRecordedRef.current) {
       return;
     }
 
@@ -179,8 +191,9 @@ export default function GamePage() {
     resultRecordedRef.current = true;
     recordMatchResult({
       matchId: completedMatchId,
-      winner: nextGame.winner,
+      winner: nextGame.winner ?? null,
       finalState: nextGame,
+      reason: nextGame.drawReason ? `draw:${nextGame.drawReason}` : "winner",
     }).catch(() => {
       setCpuError("CPUサーバーに終局結果を保存できませんでした。");
     });
@@ -190,6 +203,7 @@ export default function GamePage() {
         games: current.games + 1,
         redWins: current.redWins + (nextGame.winner === PLAYERS.RED ? 1 : 0),
         blueWins: current.blueWins + (nextGame.winner === PLAYERS.BLUE ? 1 : 0),
+        draws: current.draws + (nextGame.drawReason ? 1 : 0),
       }));
       queueAutoLearnRestart();
     }
@@ -228,6 +242,7 @@ export default function GamePage() {
       action,
     };
     const nextHistory = appendHistory(historyEntry);
+    const completedGame = applyDrawRules(nextGame, nextHistory);
 
     if (actor === "human" && cpuMode && !autoLearnModeRef.current && matchIdRef.current) {
       recordHumanMove({
@@ -236,15 +251,15 @@ export default function GamePage() {
         turnNumber: previousGame.turnNumber,
         action,
         gameStateBefore: previousGame,
-        gameStateAfter: nextGame,
+        gameStateAfter: completedGame,
         legalActions: legalActionsBefore,
       }).catch(() => {
         setCpuError("CPUサーバーに人間の手を保存できませんでした。");
       });
     }
 
-    updateGame(nextGame, previousGame);
-    return { nextGame, nextHistory };
+    updateGame(completedGame, previousGame);
+    return { nextGame: completedGame, nextHistory };
   }
 
   function queueCpuTurn(nextGame, previousGame = gameRef.current) {
@@ -297,7 +312,7 @@ export default function GamePage() {
 
       const completeCpuAction = () => {
         const nextGame = applyAction(cpuGame, selectedAction);
-        appendHistory({
+        const nextHistory = appendHistory({
           actor: "cpu",
           player: cpuGame.currentPlayer,
           turnNumber: cpuGame.turnNumber,
@@ -305,15 +320,16 @@ export default function GamePage() {
           reason: response.reason,
           fallback: response.fallback,
         });
-        setCurrentGame(nextGame);
+        const completedGame = applyDrawRules(nextGame, nextHistory);
+        setCurrentGame(completedGame);
         setSelectedPiece(null);
         if (selectedAction.type !== ACTION_TYPES.FORCE_MOVE) {
           playEffect({ type: getActionEffectType(selectedAction), id: selectedAction.to ?? selectedAction.from }, 240);
         }
 
-        handleCompletedGame(nextGame);
+        handleCompletedGame(completedGame);
 
-        queueCpuTurn(nextGame, cpuGame);
+        queueCpuTurn(completedGame, cpuGame);
       };
 
       const forcedCpuPiece = cpuGame.pendingForcedMove?.pieces[0];
@@ -336,7 +352,7 @@ export default function GamePage() {
   }
 
   function handlePointClick(positionId) {
-    if (game.winner || uiEffect.locked || isCpuTurn(game)) {
+    if (isTerminalGame(game) || uiEffect.locked || isCpuTurn(game)) {
       return;
     }
 
@@ -401,6 +417,7 @@ export default function GamePage() {
   function startFreshMatch() {
     const nextGame = createInitialGame();
     setCurrentGame(nextGame);
+    resetStateVisits(nextGame);
     setSelectedPiece(null);
     setMoveHistory([]);
     historyRef.current = [];
@@ -457,7 +474,7 @@ export default function GamePage() {
       cpuModeRef.current = true;
       setCpuMode(true);
       await startCpuMatch(gameRef.current);
-    } else if (gameRef.current.winner) {
+    } else if (isTerminalGame(gameRef.current)) {
       queueAutoLearnRestart();
     } else {
       queueCpuTurn(gameRef.current, gameRef.current);
@@ -485,10 +502,43 @@ export default function GamePage() {
   }
 
   function isCpuTurn(state) {
-    if (!cpuModeRef.current || state.winner) {
+    if (!cpuModeRef.current || isTerminalGame(state)) {
       return false;
     }
     return autoLearnModeRef.current || state.currentPlayer === CPU_PLAYER;
+  }
+
+  function applyDrawRules(nextGame, nextHistory) {
+    if (isTerminalGame(nextGame)) {
+      return nextGame;
+    }
+
+    if (nextHistory.length >= MAX_MATCH_HISTORY_LENGTH) {
+      return markDraw(nextGame, "moveLimit");
+    }
+
+    const repetitionKey = getStateRepetitionKey(nextGame);
+    const visits = stateVisitCountsRef.current;
+    const visitCount = (visits.get(repetitionKey) ?? 0) + 1;
+    visits.set(repetitionKey, visitCount);
+    if (visitCount >= REPETITION_DRAW_COUNT) {
+      return markDraw(nextGame, "repetition");
+    }
+
+    return nextGame;
+  }
+
+  function isTerminalGame(state) {
+    return Boolean(state.winner || state.drawReason);
+  }
+
+  function getStateRepetitionKey(state) {
+    return JSON.stringify({
+      board: state.board,
+      currentPlayer: state.currentPlayer,
+      phase: state.phase,
+      pendingForcedMove: state.pendingForcedMove,
+    });
   }
 
   function getActionEffectType(action) {
@@ -521,7 +571,7 @@ export default function GamePage() {
       <section className="game-status" aria-live="polite">
         <div>
           <span className={`player-dot ${game.currentPlayer}`} />
-          <strong>{game.winner ? `${getPlayerLabel(game.winner)}の勝ち` : `${getPlayerLabel(game.currentPlayer)}の手番`}</strong>
+          <strong>{getGameStatusLabel(game)}</strong>
           <span>{game.phase === "placement" ? "配置フェーズ" : "移動フェーズ"}</span>
           <span>{game.turnNumber}手目</span>
           {cpuThinking && <span>CPU思考中</span>}
@@ -560,7 +610,7 @@ export default function GamePage() {
         <button
           type="button"
           onClick={handlePass}
-          disabled={game.phase !== "movement" || game.winner || game.pendingForcedMove || movablePieces.size > 0 || isCpuTurn(game)}
+          disabled={game.phase !== "movement" || isTerminalGame(game) || game.pendingForcedMove || movablePieces.size > 0 || isCpuTurnInView}
         >
           パス
         </button>
@@ -598,11 +648,22 @@ export default function GamePage() {
             <span>{autoLearnStats.games} 局</span>
             <span>赤 {autoLearnStats.redWins}</span>
             <span>青 {autoLearnStats.blueWins}</span>
+            <span>引分 {autoLearnStats.draws}</span>
           </div>
         )}
       </section>
     </main>
   );
+}
+
+function getGameStatusLabel(game) {
+  if (game.winner) {
+    return `${getPlayerLabel(game.winner)}の勝ち`;
+  }
+  if (game.drawReason) {
+    return "引き分け";
+  }
+  return `${getPlayerLabel(game.currentPlayer)}の手番`;
 }
 
 function IntegratedBoard({

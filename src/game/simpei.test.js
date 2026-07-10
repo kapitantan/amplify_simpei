@@ -17,6 +17,7 @@ import {
   getPositionId,
   hasExactWinningLine,
   isLegalAction,
+  markDraw,
   movePiece,
   passTurn,
   placePiece,
@@ -147,6 +148,15 @@ describe("simpei rules", () => {
 
     assert.equal(hasExactWinningLine(board, PLAYERS.RED, WORLDS.UPPER), false);
     assert.equal(hasExactWinningLine(board, PLAYERS.RED, WORLDS.LOWER), false);
+  });
+
+  it("stops legal actions after a draw", () => {
+    const state = markDraw(createInitialGame(), "repetition");
+
+    assert.equal(state.drawReason, "repetition");
+    assert.equal(getLegalActions(state).length, 0);
+    assert.equal(isLegalAction(state, { type: ACTION_TYPES.PLACE, to: getPositionId(WORLDS.UPPER, 1, 1) }), false);
+    assert.match(state.message, /引き分け/);
   });
 
   it("moves only to adjacent empty points in the other world", () => {
