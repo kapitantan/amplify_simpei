@@ -270,3 +270,39 @@ def test_records_human_move_and_result(tmp_path, monkeypatch):
     assert match["result_reason"] == "winner"
     assert move_count["count"] == 2
     assert cpu_move["outcome"] == "loss"
+
+
+def test_records_color_specific_outcomes_for_auto_learning_match(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    match_id = client.post("/matches", json={"human_player": "none", "cpu_player": "both"}).json()["match_id"]
+
+    for player, turn_number, to in [("red", 1, "upper-1-1"), ("blue", 2, "upper-1-2")]:
+        response = client.post(
+            f"/matches/{match_id}/moves",
+            json={
+                "actor": "cpu",
+                "player": player,
+                "turn_number": turn_number,
+                "action": {"type": "place", "to": to},
+                "game_state_before": {"turnNumber": turn_number},
+                "game_state_after": {"turnNumber": turn_number + 1},
+                "legal_actions": [{"type": "place", "to": to}],
+            },
+        )
+        assert response.status_code == 200
+
+    result_response = client.patch(
+        f"/matches/{match_id}/result",
+        json={"winner": "red", "reason": "winner", "final_state": {"winner": "red"}},
+    )
+
+    assert result_response.status_code == 200
+
+    with module.connect() as db:
+        rows = db.execute(
+            "SELECT player, outcome FROM moves WHERE match_id = ? AND actor = 'cpu' ORDER BY turn_number",
+            (match_id,),
+        ).fetchall()
+
+    assert [(row["player"], row["outcome"]) for row in rows] == [("red", "win"), ("blue", "loss")]

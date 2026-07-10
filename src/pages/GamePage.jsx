@@ -24,15 +24,23 @@ import {
 const HUMAN_PLAYER = PLAYERS.RED;
 const CPU_PLAYER = PLAYERS.BLUE;
 const CPU_DIFFICULTY = "normal";
+const AUTO_LEARN_RESTART_DELAY_MS = 900;
+const CPU_TURN_DELAY_MS = 360;
 
 export default function GamePage() {
   const [game, setGame] = useState(() => createInitialGame());
   const [selectedPiece, setSelectedPiece] = useState(null);
   const [cpuMode, setCpuMode] = useState(false);
+  const [autoLearnMode, setAutoLearnMode] = useState(false);
   const [cpuThinking, setCpuThinking] = useState(false);
   const [cpuError, setCpuError] = useState("");
   const [matchId, setMatchId] = useState(null);
   const [moveHistory, setMoveHistory] = useState([]);
+  const [autoLearnStats, setAutoLearnStats] = useState({
+    games: 0,
+    redWins: 0,
+    blueWins: 0,
+  });
   const [flyingPiece, setFlyingPiece] = useState(null);
   const [uiEffect, setUiEffect] = useState({
     locked: false,
@@ -42,8 +50,10 @@ export default function GamePage() {
   });
   const effectTimeoutRef = useRef(null);
   const cpuTimeoutRef = useRef(null);
+  const autoLearnTimeoutRef = useRef(null);
   const forcedMoveTimeoutRef = useRef(null);
   const cpuModeRef = useRef(false);
+  const autoLearnModeRef = useRef(false);
   const matchIdRef = useRef(null);
   const historyRef = useRef([]);
   const resultRecordedRef = useRef(false);
@@ -62,6 +72,7 @@ export default function GamePage() {
     return () => {
       window.clearTimeout(effectTimeoutRef.current);
       window.clearTimeout(cpuTimeoutRef.current);
+      window.clearTimeout(autoLearnTimeoutRef.current);
       window.clearTimeout(forcedMoveTimeoutRef.current);
     };
   }, []);
@@ -144,20 +155,46 @@ export default function GamePage() {
       setSelectedPiece(null);
     }
 
-    if (cpuMode && !resultRecordedRef.current && nextGame.winner && matchIdRef.current) {
-      resultRecordedRef.current = true;
-      recordMatchResult({
-        matchId: matchIdRef.current,
-        winner: nextGame.winner,
-        finalState: nextGame,
-      }).catch(() => {
-        setCpuError("CPUサーバーに終局結果を保存できませんでした。");
-      });
-    }
+    handleCompletedGame(nextGame);
 
     if (cpuMode) {
       queueCpuTurn(nextGame, previousGame);
     }
+  }
+
+  function handleCompletedGame(nextGame) {
+    if (!cpuModeRef.current || !nextGame.winner || !matchIdRef.current || resultRecordedRef.current) {
+      return;
+    }
+
+    const completedMatchId = matchIdRef.current;
+    resultRecordedRef.current = true;
+    recordMatchResult({
+      matchId: completedMatchId,
+      winner: nextGame.winner,
+      finalState: nextGame,
+    }).catch(() => {
+      setCpuError("CPUサーバーに終局結果を保存できませんでした。");
+    });
+
+    if (autoLearnModeRef.current) {
+      setAutoLearnStats((current) => ({
+        games: current.games + 1,
+        redWins: current.redWins + (nextGame.winner === PLAYERS.RED ? 1 : 0),
+        blueWins: current.blueWins + (nextGame.winner === PLAYERS.BLUE ? 1 : 0),
+      }));
+      queueAutoLearnRestart();
+    }
+  }
+
+  function queueAutoLearnRestart() {
+    window.clearTimeout(autoLearnTimeoutRef.current);
+    autoLearnTimeoutRef.current = window.setTimeout(() => {
+      if (!autoLearnModeRef.current) {
+        return;
+      }
+      startFreshMatch();
+    }, AUTO_LEARN_RESTART_DELAY_MS);
   }
 
   function appendHistory(entry) {
@@ -184,7 +221,7 @@ export default function GamePage() {
     };
     const nextHistory = appendHistory(historyEntry);
 
-    if (actor === "human" && cpuMode && matchIdRef.current) {
+    if (actor === "human" && cpuMode && !autoLearnModeRef.current && matchIdRef.current) {
       recordHumanMove({
         matchId: matchIdRef.current,
         player: previousGame.currentPlayer,
@@ -210,7 +247,7 @@ export default function GamePage() {
     window.clearTimeout(cpuTimeoutRef.current);
     cpuTimeoutRef.current = window.setTimeout(() => {
       playCpuTurn(nextGame, previousGame);
-    }, 360);
+    }, CPU_TURN_DELAY_MS);
   }
 
   async function playCpuTurn(cpuGame) {
@@ -233,7 +270,7 @@ export default function GamePage() {
         gameState: cpuGame,
         legalActions: cpuLegalActions,
         candidateActions,
-        cpuPlayer: CPU_PLAYER,
+        cpuPlayer: cpuGame.currentPlayer,
         difficulty: CPU_DIFFICULTY,
         moveHistory: historyRef.current,
       });
@@ -259,16 +296,7 @@ export default function GamePage() {
           playEffect({ type: getActionEffectType(selectedAction), id: selectedAction.to ?? selectedAction.from }, 240);
         }
 
-        if (!resultRecordedRef.current && nextGame.winner && matchIdRef.current) {
-          resultRecordedRef.current = true;
-          recordMatchResult({
-            matchId: matchIdRef.current,
-            winner: nextGame.winner,
-            finalState: nextGame,
-          }).catch(() => {
-            setCpuError("CPUサーバーに終局結果を保存できませんでした。");
-          });
-        }
+        handleCompletedGame(nextGame);
 
         queueCpuTurn(nextGame, cpuGame);
       };
@@ -345,6 +373,11 @@ export default function GamePage() {
   }
 
   function resetGame() {
+    window.clearTimeout(autoLearnTimeoutRef.current);
+    startFreshMatch();
+  }
+
+  function startFreshMatch() {
     const nextGame = createInitialGame();
     setGame(nextGame);
     setSelectedPiece(null);
@@ -375,6 +408,9 @@ export default function GamePage() {
     setCpuError("");
 
     if (!enabled) {
+      autoLearnModeRef.current = false;
+      setAutoLearnMode(false);
+      window.clearTimeout(autoLearnTimeoutRef.current);
       matchIdRef.current = null;
       setMatchId(null);
       return;
@@ -383,17 +419,41 @@ export default function GamePage() {
     await startCpuMatch(game);
   }
 
+  async function handleAutoLearnModeChange(event) {
+    const enabled = event.target.checked;
+    autoLearnModeRef.current = enabled;
+    setAutoLearnMode(enabled);
+    setCpuError("");
+
+    if (!enabled) {
+      window.clearTimeout(autoLearnTimeoutRef.current);
+      return;
+    }
+
+    if (!cpuModeRef.current) {
+      cpuModeRef.current = true;
+      setCpuMode(true);
+      await startCpuMatch(game);
+    } else if (game.winner) {
+      queueAutoLearnRestart();
+    } else {
+      queueCpuTurn(game, game);
+    }
+  }
+
   async function startCpuMatch(currentGame) {
     try {
       const response = await createCpuMatch({
-        humanPlayer: HUMAN_PLAYER,
-        cpuPlayer: CPU_PLAYER,
+        humanPlayer: autoLearnModeRef.current ? "none" : HUMAN_PLAYER,
+        cpuPlayer: autoLearnModeRef.current ? "both" : CPU_PLAYER,
         difficulty: CPU_DIFFICULTY,
       });
       matchIdRef.current = response.match_id;
       setMatchId(response.match_id);
       resultRecordedRef.current = false;
-      queueCpuTurn(currentGame, currentGame);
+      if (isCpuTurn(currentGame)) {
+        queueCpuTurn(currentGame, currentGame);
+      }
     } catch (error) {
       cpuModeRef.current = false;
       setCpuMode(false);
@@ -402,7 +462,10 @@ export default function GamePage() {
   }
 
   function isCpuTurn(state) {
-    return cpuModeRef.current && !state.winner && state.currentPlayer === CPU_PLAYER;
+    if (!cpuModeRef.current || state.winner) {
+      return false;
+    }
+    return autoLearnModeRef.current || state.currentPlayer === CPU_PLAYER;
   }
 
   function getActionEffectType(action) {
@@ -422,7 +485,7 @@ export default function GamePage() {
           <p className="eyebrow">Local match</p>
           <h1>シンペイ</h1>
           <p className="game-lead">
-            ログインなしで遊べるローカル対戦です。CPUモードでは赤が人間、青がCPUです。
+            ログインなしで遊べるローカル対戦です。CPUモードでは赤が人間、青がCPUです。自動学習ではCPU同士が対戦を繰り返します。
           </p>
         </div>
         <div className="game-actions">
@@ -439,6 +502,7 @@ export default function GamePage() {
           <span>{game.phase === "placement" ? "配置フェーズ" : "移動フェーズ"}</span>
           <span>{game.turnNumber}手目</span>
           {cpuThinking && <span>CPU思考中</span>}
+          {autoLearnMode && <span>自動学習中</span>}
         </div>
         <p>{game.message}</p>
         {cpuError && <p className="cpu-error">{cpuError}</p>}
@@ -486,6 +550,14 @@ export default function GamePage() {
           />
           CPU対戦
         </label>
+        <label className="cpu-toggle">
+          <input
+            type="checkbox"
+            checked={autoLearnMode}
+            onChange={handleAutoLearnModeChange}
+          />
+          自動学習
+        </label>
         <div>
           <strong>残り手駒</strong>
           <span>赤 {4 - game.placedCount[PLAYERS.RED]} 個</span>
@@ -495,6 +567,14 @@ export default function GamePage() {
           <div>
             <strong>CPU履歴</strong>
             <span>{moveHistory.length} 手</span>
+          </div>
+        )}
+        {autoLearnMode && (
+          <div>
+            <strong>学習対局</strong>
+            <span>{autoLearnStats.games} 局</span>
+            <span>赤 {autoLearnStats.redWins}</span>
+            <span>青 {autoLearnStats.blueWins}</span>
           </div>
         )}
       </section>

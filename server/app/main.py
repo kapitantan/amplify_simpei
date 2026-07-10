@@ -271,22 +271,24 @@ def record_result(match_id: str, request: ResultRequest) -> dict[str, str]:
             """,
             (request.winner, request.reason, dumps(request.final_state), match_id),
         )
-        db.execute(
-            "UPDATE moves SET outcome = ? WHERE match_id = ? AND actor = 'cpu'",
-            (cpu_outcome, match_id),
-        )
         cpu_moves = db.execute(
             """
-            SELECT cache_key, action_json
+            SELECT id, cache_key, action_json, player
             FROM moves
-            WHERE match_id = ? AND actor = 'cpu' AND cache_key IS NOT NULL
+            WHERE match_id = ? AND actor = 'cpu'
             """,
             (match_id,),
         ).fetchall()
         for move in cpu_moves:
+            move_outcome = cpu_outcome
+            if match and match["cpu_player"] == "both":
+                move_outcome = get_cpu_outcome(request.winner, move["player"])
+            db.execute("UPDATE moves SET outcome = ? WHERE id = ?", (move_outcome, move["id"]))
+            if not move["cache_key"]:
+                continue
             action = json.loads(move["action_json"])
-            record_move_feedback(db, move["cache_key"], action, cpu_outcome)
-            if cpu_outcome == "loss":
+            record_move_feedback(db, move["cache_key"], action, move_outcome)
+            if move_outcome == "loss":
                 invalidate_cached_action(db, move["cache_key"])
     return {"status": "recorded"}
 
