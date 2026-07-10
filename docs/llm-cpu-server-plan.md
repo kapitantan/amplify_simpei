@@ -267,6 +267,23 @@ VITE_CPU_API_BASE=http://localhost:8000 npm run dev
 
 ## トラブルシュート
 
+- CPU対戦を ON にしたとき `OPTIONS /matches HTTP/1.1" 400 Bad Request` が出る
+  - ブラウザの CORS preflight が FastAPI に拒否されている。
+  - この実装では既定で `localhost` / `127.0.0.1` / LAN private IP / Tailscale 100.x の Origin を許可する。
+  - コードを更新した後、acer 側の FastAPI を再起動する。
+  - 一時的に全 Origin を許可する場合は、公開環境では使わず開発時だけ次のように起動する。
+
+```sh
+SIMPEI_ALLOWED_ORIGINS='*' OLLAMA_MODEL=gpt-oss:20b uvicorn server.app.main:app --host 127.0.0.1 --port 8000
+```
+
+  - 特定 Origin だけを明示許可する場合:
+
+```sh
+SIMPEI_ALLOWED_ORIGINS='http://localhost:5173,http://127.0.0.1:5173,http://192.168.1.10:5173' \
+OLLAMA_MODEL=gpt-oss:20b uvicorn server.app.main:app --host 127.0.0.1 --port 8000
+```
+
 - `/health` の `ollama_ok` が `false`
   - `sudo systemctl status ollama --no-pager`
   - `curl http://localhost:11434/api/tags`

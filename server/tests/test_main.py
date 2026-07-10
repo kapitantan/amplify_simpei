@@ -21,6 +21,24 @@ def test_health_reports_server_status(tmp_path, monkeypatch):
     assert response.json()["ok"] is True
 
 
+def test_cors_preflight_allows_local_and_private_network_origins(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+
+    for origin in ["http://localhost:5173", "http://127.0.0.1:5173", "http://192.168.1.10:5173", "http://100.64.0.10:5173"]:
+        response = client.options(
+            "/matches",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin
+
+
 def test_cpu_move_falls_back_to_first_legal_action_and_records_move(tmp_path, monkeypatch):
     module = load_app(tmp_path, monkeypatch)
     client = TestClient(module.app)

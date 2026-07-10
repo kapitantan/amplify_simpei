@@ -18,11 +18,16 @@ from pydantic import BaseModel, Field
 DATABASE_PATH = Path(os.getenv("SIMPEI_DATABASE_PATH", "server/data/simpei_cpu.sqlite3"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b")
-ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("SIMPEI_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
-    if origin.strip()
-]
+ALLOWED_ORIGINS_VALUE = os.getenv("SIMPEI_ALLOWED_ORIGINS", "")
+ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_VALUE.split(",") if origin.strip()]
+ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS_VALUE.strip() == "*"
+ALLOWED_ORIGIN_REGEX = os.getenv(
+    "SIMPEI_ALLOWED_ORIGIN_REGEX",
+    r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|"
+    r"192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+    r"172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|"
+    r"100\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$",
+)
 
 
 class MatchCreateRequest(BaseModel):
@@ -81,7 +86,8 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Simpei CPU Server", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"] if ALLOW_ALL_ORIGINS else ALLOWED_ORIGINS,
+    allow_origin_regex=None if ALLOW_ALL_ORIGINS else ALLOWED_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
