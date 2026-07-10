@@ -71,6 +71,82 @@ def test_cpu_move_falls_back_to_first_legal_action_and_records_move(tmp_path, mo
     assert "upper-1-1" in rows[0]["action_json"]
 
 
+def test_cpu_move_uses_heuristic_immediate_win_without_llm(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("LLM should not be called for an immediate win")
+
+    monkeypatch.setattr(module, "ask_ollama", fail_if_called)
+    client = TestClient(module.app)
+    match_id = client.post("/matches", json={"human_player": "red", "cpu_player": "blue"}).json()["match_id"]
+    legal_actions = [
+        {"type": "place", "to": "upper-1-1"},
+        {"type": "place", "to": "upper-2-2"},
+    ]
+
+    response = client.post(
+        "/cpu/move",
+        json={
+            "match_id": match_id,
+            "game_state": {"turnNumber": 5, "board": {}, "currentPlayer": "blue"},
+            "legal_actions": legal_actions,
+            "candidate_actions": [
+                {
+                    "action": legal_actions[0],
+                    "next_state": {"winner": "blue", "board": {"upper-1-1": "blue"}},
+                },
+                {
+                    "action": legal_actions[1],
+                    "next_state": {"winner": None, "board": {"upper-2-2": "blue"}},
+                },
+            ],
+            "cpu_player": "blue",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selected_action"] == legal_actions[0]
+    assert body["source"] == "heuristic"
+    assert body["cache_hit"] is False
+    assert "immediate winning" in body["reason"]
+
+    with module.connect() as db:
+        row = db.execute(
+            "SELECT candidate_evaluations_json, source FROM moves WHERE match_id = ?",
+            (match_id,),
+        ).fetchone()
+
+    assert row["source"] == "heuristic"
+    assert "immediate_win" in row["candidate_evaluations_json"]
+
+
+def test_cpu_move_reuses_cached_decision(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    payload = {
+        "game_state": {"turnNumber": 5, "board": {}, "currentPlayer": "blue"},
+        "legal_actions": [{"type": "place", "to": "upper-1-1"}],
+        "candidate_actions": [
+            {
+                "action": {"type": "place", "to": "upper-1-1"},
+                "next_state": {"winner": "blue", "board": {"upper-1-1": "blue"}},
+            }
+        ],
+        "cpu_player": "blue",
+    }
+
+    first = client.post("/cpu/move", json=payload)
+    second = client.post("/cpu/move", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["cache_hit"] is False
+    assert second.json()["cache_hit"] is True
+    assert second.json()["source"] == "cache"
+
+
 def test_records_human_move_and_result(tmp_path, monkeypatch):
     module = load_app(tmp_path, monkeypatch)
     client = TestClient(module.app)
@@ -88,18 +164,33 @@ def test_records_human_move_and_result(tmp_path, monkeypatch):
             "legal_actions": [{"type": "place", "to": "upper-1-1"}],
         },
     )
+    cpu_response = client.post(
+        f"/matches/{match_id}/moves",
+        json={
+            "actor": "cpu",
+            "player": "blue",
+            "turn_number": 2,
+            "action": {"type": "place", "to": "upper-1-2"},
+            "game_state_before": {"turnNumber": 2},
+            "game_state_after": {"turnNumber": 3},
+            "legal_actions": [{"type": "place", "to": "upper-1-2"}],
+        },
+    )
     result_response = client.patch(
         f"/matches/{match_id}/result",
         json={"winner": "red", "reason": "winner", "final_state": {"winner": "red"}},
     )
 
     assert move_response.status_code == 200
+    assert cpu_response.status_code == 200
     assert result_response.status_code == 200
 
     with module.connect() as db:
         match = db.execute("SELECT winner, result_reason FROM matches WHERE id = ?", (match_id,)).fetchone()
         move_count = db.execute("SELECT COUNT(*) AS count FROM moves WHERE match_id = ?", (match_id,)).fetchone()
+        cpu_move = db.execute("SELECT outcome FROM moves WHERE match_id = ? AND actor = 'cpu'", (match_id,)).fetchone()
 
     assert match["winner"] == "red"
     assert match["result_reason"] == "winner"
-    assert move_count["count"] == 1
+    assert move_count["count"] == 2
+    assert cpu_move["outcome"] == "loss"

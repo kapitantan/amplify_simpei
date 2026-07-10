@@ -224,10 +224,15 @@ export default function GamePage() {
     setCpuError("");
 
     try {
+      const candidateActions = cpuLegalActions.map((action) => ({
+        action,
+        next_state: applyAction(cpuGame, action),
+      }));
       const response = await requestCpuMove({
         matchId: currentMatchId,
         gameState: cpuGame,
         legalActions: cpuLegalActions,
+        candidateActions,
         cpuPlayer: CPU_PLAYER,
         difficulty: CPU_DIFFICULTY,
         moveHistory: historyRef.current,

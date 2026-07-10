@@ -27,13 +27,14 @@ export function createCpuMatch({ humanPlayer, cpuPlayer, difficulty }) {
   });
 }
 
-export function requestCpuMove({ matchId, gameState, legalActions, cpuPlayer, difficulty, moveHistory }) {
+export function requestCpuMove({ matchId, gameState, legalActions, candidateActions, cpuPlayer, difficulty, moveHistory }) {
   return request("/cpu/move", {
     method: "POST",
     body: JSON.stringify({
       match_id: matchId,
       game_state: gameState,
       legal_actions: legalActions,
+      candidate_actions: candidateActions,
       cpu_player: cpuPlayer,
       difficulty,
       move_history: moveHistory,

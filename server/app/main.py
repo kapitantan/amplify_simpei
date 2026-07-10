@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import time
+from hashlib import sha256
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,25 @@ ALLOWED_ORIGIN_REGEX = os.getenv(
     r"172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|"
     r"100\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$",
 )
+LLM_TOP_CANDIDATES = int(os.getenv("SIMPEI_LLM_TOP_CANDIDATES", "5"))
+HEURISTIC_MARGIN = int(os.getenv("SIMPEI_HEURISTIC_MARGIN", "80"))
+
+PLAYERS = {"red", "blue"}
+ACTION_PLACE = "place"
+ACTION_MOVE = "move"
+ACTION_FORCE_MOVE = "forceMove"
+ACTION_PASS = "pass"
+WORLDS = {"upper": 4, "lower": 3}
+DIRECTIONS = [(0, 1), (1, 0), (1, 1), (1, -1)]
+CENTER_POINTS = {
+    "upper-1-1",
+    "upper-1-2",
+    "upper-2-1",
+    "upper-2-2",
+    "lower-1-1",
+}
+
+MOVE_CACHE: dict[str, dict[str, Any]] = {}
 
 
 class MatchCreateRequest(BaseModel):
@@ -58,9 +78,15 @@ class CpuMoveRequest(BaseModel):
     match_id: str | None = None
     game_state: dict[str, Any]
     legal_actions: list[dict[str, Any]]
+    candidate_actions: list["CandidateAction"] = Field(default_factory=list)
     cpu_player: str = "blue"
     difficulty: str = "normal"
     move_history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CandidateAction(BaseModel):
+    action: dict[str, Any]
+    next_state: dict[str, Any]
 
 
 class CpuMoveResponse(BaseModel):
@@ -69,6 +95,8 @@ class CpuMoveResponse(BaseModel):
     model: str
     latency_ms: int
     fallback: bool = False
+    source: str = "llm"
+    cache_hit: bool = False
 
 
 class ResultRequest(BaseModel):
@@ -151,20 +179,43 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
         raise HTTPException(status_code=400, detail="legal_actions must not be empty")
 
     started_at = time.perf_counter()
-    selected_action = request.legal_actions[0]
-    reason = "Fallback: selected the first legal action."
+    candidate_evaluations = evaluate_candidates(request)
+    ranked_actions = [evaluation["action"] for evaluation in candidate_evaluations] or request.legal_actions
+    selected_action = ranked_actions[0]
+    reason = "Heuristic fallback: selected the highest-scored legal action."
     fallback = True
+    source = "heuristic"
+    cache_hit = False
+    cache_key = build_cache_key(request)
 
-    try:
-        llm_action, llm_reason = await ask_ollama(request)
-        if is_legal_action(llm_action, request.legal_actions):
-            selected_action = llm_action
-            reason = llm_reason or "Selected by local LLM."
-            fallback = False
+    cached_action = MOVE_CACHE.get(cache_key) or load_cached_action(cache_key)
+    if cached_action and is_legal_action(cached_action["selected_action"], request.legal_actions):
+        selected_action = cached_action["selected_action"]
+        reason = cached_action["reason"]
+        fallback = bool(cached_action["fallback"])
+        source = "cache"
+        cache_hit = True
+    else:
+        top_score = candidate_evaluations[0]["score"] if candidate_evaluations else 0
+        second_score = candidate_evaluations[1]["score"] if len(candidate_evaluations) > 1 else None
+        should_skip_llm = top_score >= 9000 or second_score is None or top_score - second_score >= HEURISTIC_MARGIN
+
+        if not should_skip_llm:
+            llm_candidates = ranked_actions[:LLM_TOP_CANDIDATES]
+            try:
+                llm_action, llm_reason = await ask_ollama(request, llm_candidates)
+                if is_legal_action(llm_action, llm_candidates):
+                    selected_action = llm_action
+                    reason = llm_reason or "Selected by local LLM from top heuristic candidates."
+                    fallback = False
+                    source = "llm"
+                else:
+                    reason = "Heuristic fallback: local LLM returned an illegal action."
+            except Exception as exc:
+                reason = f"Heuristic fallback: local LLM request failed ({type(exc).__name__})."
         else:
-            reason = "Fallback: local LLM returned an illegal action."
-    except Exception as exc:
-        reason = f"Fallback: local LLM request failed ({type(exc).__name__})."
+            reason = build_heuristic_reason(candidate_evaluations[0] if candidate_evaluations else None)
+            fallback = False
 
     latency_ms = round((time.perf_counter() - started_at) * 1000)
     response = CpuMoveResponse(
@@ -173,7 +224,11 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
         model=OLLAMA_MODEL,
         latency_ms=latency_ms,
         fallback=fallback,
+        source=source,
+        cache_hit=cache_hit,
     )
+    if not cache_hit:
+        save_cached_action(cache_key, response)
 
     if request.match_id:
         ensure_match(request.match_id)
@@ -188,6 +243,9 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
             reason=response.reason,
             model=response.model,
             latency_ms=response.latency_ms,
+            candidate_evaluations=candidate_evaluations,
+            source=response.source,
+            cache_key=cache_key,
         )
 
     return response
@@ -197,6 +255,8 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
 def record_result(match_id: str, request: ResultRequest) -> dict[str, str]:
     ensure_match(match_id)
     with connect() as db:
+        match = db.execute("SELECT cpu_player FROM matches WHERE id = ?", (match_id,)).fetchone()
+        cpu_outcome = get_cpu_outcome(request.winner, match["cpu_player"] if match else None)
         db.execute(
             """
             UPDATE matches
@@ -205,11 +265,15 @@ def record_result(match_id: str, request: ResultRequest) -> dict[str, str]:
             """,
             (request.winner, request.reason, dumps(request.final_state), match_id),
         )
+        db.execute(
+            "UPDATE moves SET outcome = ? WHERE match_id = ? AND actor = 'cpu'",
+            (cpu_outcome, match_id),
+        )
     return {"status": "recorded"}
 
 
-async def ask_ollama(request: CpuMoveRequest) -> tuple[dict[str, Any], str]:
-    prompt = build_prompt(request)
+async def ask_ollama(request: CpuMoveRequest, legal_actions: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+    prompt = build_prompt(request, legal_actions)
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             f"{OLLAMA_BASE_URL}/api/generate",
@@ -218,6 +282,11 @@ async def ask_ollama(request: CpuMoveRequest) -> tuple[dict[str, Any], str]:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "keep_alive": "10m",
+                "options": {
+                    "num_predict": 96,
+                    "temperature": 0.1,
+                },
             },
         )
         response.raise_for_status()
@@ -227,16 +296,17 @@ async def ask_ollama(request: CpuMoveRequest) -> tuple[dict[str, Any], str]:
     return content.get("selected_action") or {}, content.get("reason") or ""
 
 
-def build_prompt(request: CpuMoveRequest) -> str:
+def build_prompt(request: CpuMoveRequest, legal_actions: list[dict[str, Any]]) -> str:
     return "\n".join(
         [
             "You are choosing a move for the board game Simpei.",
             "Return JSON only with keys selected_action and reason.",
             "selected_action must exactly equal one object from legal_actions.",
+            "Prefer immediate wins and avoid moves that create obvious threats for the opponent.",
             f"difficulty: {request.difficulty}",
             f"cpu_player: {request.cpu_player}",
             f"game_state: {dumps(request.game_state)}",
-            f"legal_actions: {dumps(request.legal_actions)}",
+            f"legal_actions: {dumps(legal_actions)}",
             f"recent_move_history: {dumps(request.move_history[-12:])}",
         ]
     )
@@ -273,10 +343,28 @@ def init_database() -> None:
               game_state_after_json TEXT,
               reason TEXT,
               model TEXT,
-              latency_ms INTEGER
+              latency_ms INTEGER,
+              candidate_evaluations_json TEXT,
+              source TEXT,
+              cache_key TEXT,
+              outcome TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS move_cache (
+              cache_key TEXT PRIMARY KEY,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              model TEXT NOT NULL,
+              selected_action_json TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              fallback INTEGER NOT NULL,
+              source TEXT NOT NULL
             );
             """
         )
+        ensure_column(db, "moves", "candidate_evaluations_json", "TEXT")
+        ensure_column(db, "moves", "source", "TEXT")
+        ensure_column(db, "moves", "cache_key", "TEXT")
+        ensure_column(db, "moves", "outcome", "TEXT")
 
 
 def connect() -> sqlite3.Connection:
@@ -305,15 +393,19 @@ def insert_move(
     reason: str | None = None,
     model: str | None = None,
     latency_ms: int | None = None,
+    candidate_evaluations: list[dict[str, Any]] | None = None,
+    source: str | None = None,
+    cache_key: str | None = None,
 ) -> None:
     with connect() as db:
         db.execute(
             """
             INSERT INTO moves (
               match_id, actor, player, turn_number, action_json, legal_actions_json,
-              game_state_json, game_state_after_json, reason, model, latency_ms
+              game_state_json, game_state_after_json, reason, model, latency_ms,
+              candidate_evaluations_json, source, cache_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 match_id,
@@ -327,6 +419,9 @@ def insert_move(
                 reason,
                 model,
                 latency_ms,
+                dumps(candidate_evaluations) if candidate_evaluations is not None else None,
+                source,
+                cache_key,
             ),
         )
 
@@ -337,6 +432,270 @@ def is_legal_action(action: dict[str, Any], legal_actions: list[dict[str, Any]])
 
 def action_key(action: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
     return action.get("type"), action.get("from"), action.get("to")
+
+
+def evaluate_candidates(request: CpuMoveRequest) -> list[dict[str, Any]]:
+    candidates = request.candidate_actions or [
+        CandidateAction(action=action, next_state={})
+        for action in request.legal_actions
+    ]
+    opponent = get_opponent(request.cpu_player)
+    evaluations = []
+
+    for index, candidate in enumerate(candidates):
+        next_state = candidate.next_state or {}
+        score, features = evaluate_state_after_action(
+            action=candidate.action,
+            next_state=next_state,
+            cpu_player=request.cpu_player,
+            opponent=opponent,
+        )
+        evaluations.append({
+            "action": candidate.action,
+            "score": score,
+            "features": features,
+            "index": index,
+        })
+
+    evaluations.sort(key=lambda item: item["score"], reverse=True)
+    return evaluations
+
+
+def evaluate_state_after_action(
+    *,
+    action: dict[str, Any],
+    next_state: dict[str, Any],
+    cpu_player: str,
+    opponent: str,
+) -> tuple[int, dict[str, Any]]:
+    board = next_state.get("board") or {}
+    features: dict[str, Any] = {}
+    score = 0
+
+    winner = next_state.get("winner")
+    if winner == cpu_player:
+        features["immediate_win"] = True
+        score += 10000
+    elif winner == opponent:
+        features["opponent_win"] = True
+        score -= 10000
+
+    cpu_threats = count_open_two_lines(board, cpu_player)
+    opponent_threats = count_open_two_lines(board, opponent)
+    cpu_lines = count_single_lines(board, cpu_player)
+    opponent_lines = count_single_lines(board, opponent)
+    center_control = count_center_control(board, cpu_player) - count_center_control(board, opponent)
+    mobility_hint = estimate_mobility(board, cpu_player) - estimate_mobility(board, opponent)
+
+    score += cpu_threats * 85
+    score -= opponent_threats * 95
+    score += cpu_lines * 8
+    score -= opponent_lines * 9
+    score += center_control * 12
+    score += mobility_hint * 2
+
+    if action.get("type") == ACTION_FORCE_MOVE:
+        score += 30
+    elif action.get("type") == ACTION_MOVE:
+        score += 4
+    elif action.get("type") == ACTION_PASS:
+        score -= 40
+
+    if next_state.get("pendingForcedMove", {}).get("player") == cpu_player:
+        pending_count = len(next_state.get("pendingForcedMove", {}).get("pieces", []))
+        score += 45 + pending_count * 25
+        features["created_forced_move"] = pending_count
+
+    features.update({
+        "cpu_open_twos": cpu_threats,
+        "opponent_open_twos": opponent_threats,
+        "cpu_single_lines": cpu_lines,
+        "opponent_single_lines": opponent_lines,
+        "center_control_delta": center_control,
+        "mobility_delta": mobility_hint,
+    })
+    return score, features
+
+
+def count_open_two_lines(board: dict[str, Any], player: str) -> int:
+    count = 0
+    for line in winning_lines():
+        values = [board.get(position_id) for position_id in line]
+        if values.count(player) == 2 and values.count(None) == 1:
+            count += 1
+    return count
+
+
+def count_single_lines(board: dict[str, Any], player: str) -> int:
+    count = 0
+    for line in winning_lines():
+        values = [board.get(position_id) for position_id in line]
+        if values.count(player) == 1 and values.count(None) == 2:
+            count += 1
+    return count
+
+
+def winning_lines() -> list[list[str]]:
+    lines = []
+    for world, size in WORLDS.items():
+        for row in range(size):
+            for col in range(size):
+                for row_delta, col_delta in DIRECTIONS:
+                    line = [
+                        (row, col),
+                        (row + row_delta, col + col_delta),
+                        (row + row_delta * 2, col + col_delta * 2),
+                    ]
+                    if all(0 <= line_row < size and 0 <= line_col < size for line_row, line_col in line):
+                        lines.append([f"{world}-{line_row}-{line_col}" for line_row, line_col in line])
+    unique = {}
+    for line in lines:
+        unique["|".join(line)] = line
+    return list(unique.values())
+
+
+def count_center_control(board: dict[str, Any], player: str) -> int:
+    return sum(1 for position_id in CENTER_POINTS if board.get(position_id) == player)
+
+
+def estimate_mobility(board: dict[str, Any], player: str) -> int:
+    return sum(1 for position_id, occupant in board.items() if occupant == player and adjacent_empty_count(board, position_id) > 0)
+
+
+def adjacent_empty_count(board: dict[str, Any], position_id: str) -> int:
+    position = parse_position(position_id)
+    if not position:
+        return 0
+    world, row, col = position
+    adjacent = []
+    if world == "upper":
+        adjacent = [
+            ("lower", row - 1, col - 1),
+            ("lower", row - 1, col),
+            ("lower", row, col - 1),
+            ("lower", row, col),
+        ]
+    else:
+        adjacent = [
+            ("upper", row, col),
+            ("upper", row + 1, col),
+            ("upper", row, col + 1),
+            ("upper", row + 1, col + 1),
+        ]
+    return sum(
+        1
+        for adjacent_world, adjacent_row, adjacent_col in adjacent
+        if is_inside(adjacent_world, adjacent_row, adjacent_col)
+        and board.get(f"{adjacent_world}-{adjacent_row}-{adjacent_col}") is None
+    )
+
+
+def parse_position(position_id: str) -> tuple[str, int, int] | None:
+    parts = position_id.split("-")
+    if len(parts) != 3 or parts[0] not in WORLDS:
+        return None
+    try:
+        return parts[0], int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
+def is_inside(world: str, row: int, col: int) -> bool:
+    size = WORLDS[world]
+    return 0 <= row < size and 0 <= col < size
+
+
+def get_opponent(player: str) -> str:
+    return "blue" if player == "red" else "red"
+
+
+def get_cpu_outcome(winner: str | None, cpu_player: str | None) -> str:
+    if not winner:
+        return "draw"
+    if winner == cpu_player:
+        return "win"
+    return "loss"
+
+
+def action_sort_key(action: dict[str, Any]) -> str:
+    return ":".join(str(part or "") for part in action_key(action))
+
+
+def build_heuristic_reason(evaluation: dict[str, Any] | None) -> str:
+    if not evaluation:
+        return "Heuristic fallback: selected the first legal action."
+    features = evaluation["features"]
+    if features.get("immediate_win"):
+        return "Heuristic: selected an immediate winning move."
+    if features.get("created_forced_move"):
+        return "Heuristic: selected a move that creates a forced relocation."
+    return f"Heuristic: selected the top-scored move ({evaluation['score']})."
+
+
+def build_cache_key(request: CpuMoveRequest) -> str:
+    payload = {
+        "model": OLLAMA_MODEL,
+        "difficulty": request.difficulty,
+        "cpu_player": request.cpu_player,
+        "game_state": request.game_state,
+        "legal_actions": sorted([action_sort_key(action) for action in request.legal_actions]),
+        "candidate_states": [
+            {
+                "action": candidate.action,
+                "next_state": candidate.next_state,
+            }
+            for candidate in request.candidate_actions
+        ],
+    }
+    return sha256(dumps(payload).encode("utf-8")).hexdigest()
+
+
+def load_cached_action(cache_key: str) -> dict[str, Any] | None:
+    with connect() as db:
+        row = db.execute(
+            "SELECT selected_action_json, reason, fallback, source FROM move_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "selected_action": json.loads(row["selected_action_json"]),
+        "reason": row["reason"],
+        "fallback": bool(row["fallback"]),
+        "source": row["source"],
+    }
+
+
+def save_cached_action(cache_key: str, response: CpuMoveResponse) -> None:
+    MOVE_CACHE[cache_key] = {
+        "selected_action": response.selected_action,
+        "reason": response.reason,
+        "fallback": response.fallback,
+        "source": response.source,
+    }
+    with connect() as db:
+        db.execute(
+            """
+            INSERT OR REPLACE INTO move_cache (
+              cache_key, model, selected_action_json, reason, fallback, source
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                cache_key,
+                response.model,
+                dumps(response.selected_action),
+                response.reason,
+                1 if response.fallback else 0,
+                response.source,
+            ),
+        )
+
+
+def ensure_column(db: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
+    columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
 def dumps(value: Any) -> str:
