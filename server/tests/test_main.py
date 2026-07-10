@@ -122,6 +122,34 @@ def test_cpu_move_uses_heuristic_immediate_win_without_llm(tmp_path, monkeypatch
     assert "immediate_win" in row["candidate_evaluations_json"]
 
 
+def test_cpu_move_accepts_candidate_with_null_pending_forced_move(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    legal_actions = [{"type": "place", "to": "upper-1-1"}]
+
+    response = client.post(
+        "/cpu/move",
+        json={
+            "game_state": {"turnNumber": 1, "board": {}, "currentPlayer": "blue"},
+            "legal_actions": legal_actions,
+            "candidate_actions": [
+                {
+                    "action": legal_actions[0],
+                    "next_state": {
+                        "winner": None,
+                        "pendingForcedMove": None,
+                        "board": {"upper-1-1": "blue"},
+                    },
+                }
+            ],
+            "cpu_player": "blue",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected_action"] == legal_actions[0]
+
+
 def test_cpu_move_reuses_cached_decision(tmp_path, monkeypatch):
     module = load_app(tmp_path, monkeypatch)
     client = TestClient(module.app)

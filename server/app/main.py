@@ -501,8 +501,9 @@ def evaluate_state_after_action(
     elif action.get("type") == ACTION_PASS:
         score -= 40
 
-    if next_state.get("pendingForcedMove", {}).get("player") == cpu_player:
-        pending_count = len(next_state.get("pendingForcedMove", {}).get("pieces", []))
+    pending_forced_move = next_state.get("pendingForcedMove") or {}
+    if pending_forced_move.get("player") == cpu_player:
+        pending_count = len(pending_forced_move.get("pieces", []))
         score += 45 + pending_count * 25
         features["created_forced_move"] = pending_count
 
