@@ -122,6 +122,92 @@ def test_cpu_move_uses_heuristic_immediate_win_without_llm(tmp_path, monkeypatch
     assert "immediate_win" in row["candidate_evaluations_json"]
 
 
+def test_cpu_move_avoids_allowing_opponent_immediate_fork(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("LLM should not be called when tactical safety is decisive")
+
+    monkeypatch.setattr(module, "ask_ollama", fail_if_called)
+    client = TestClient(module.app)
+    match_id = client.post("/matches", json={"human_player": "none", "cpu_player": "both"}).json()["match_id"]
+
+    board = {position_id: None for position_id in module.POSITIONS}
+    board.update({
+        "upper-1-1": "red",
+        "upper-2-1": "red",
+        "upper-1-2": "blue",
+    })
+    safe_board = {**board, "upper-1-0": "blue"}
+    dangerous_board = {**board, "upper-2-2": "blue"}
+    legal_actions = [
+        {"type": "place", "to": "upper-2-2"},
+        {"type": "place", "to": "upper-1-0"},
+    ]
+
+    response = client.post(
+        "/cpu/move",
+        json={
+            "match_id": match_id,
+            "game_state": {
+                "turnNumber": 4,
+                "currentPlayer": "blue",
+                "phase": "placement",
+                "placedCount": {"red": 2, "blue": 1},
+                "pendingForcedMove": None,
+                "winner": None,
+                "board": board,
+            },
+            "legal_actions": legal_actions,
+            "candidate_actions": [
+                {
+                    "action": legal_actions[0],
+                    "next_state": {
+                        "turnNumber": 5,
+                        "currentPlayer": "red",
+                        "phase": "placement",
+                        "placedCount": {"red": 2, "blue": 2},
+                        "pendingForcedMove": None,
+                        "winner": None,
+                        "board": dangerous_board,
+                    },
+                },
+                {
+                    "action": legal_actions[1],
+                    "next_state": {
+                        "turnNumber": 4,
+                        "currentPlayer": "blue",
+                        "phase": "placement",
+                        "placedCount": {"red": 2, "blue": 2},
+                        "pendingForcedMove": {
+                            "player": "blue",
+                            "pieces": [{"from": "upper-1-1", "player": "red"}],
+                        },
+                        "winner": None,
+                        "board": safe_board,
+                    },
+                },
+            ],
+            "cpu_player": "blue",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selected_action"] == legal_actions[1]
+    assert body["source"] == "heuristic"
+    assert "avoids immediate opponent wins" in body["reason"]
+
+    with module.connect() as db:
+        row = db.execute(
+            "SELECT candidate_evaluations_json FROM moves WHERE match_id = ?",
+            (match_id,),
+        ).fetchone()
+
+    assert '"opponent_fork":true' in row["candidate_evaluations_json"]
+    assert '"blocked_opponent_immediate_win":true' in row["candidate_evaluations_json"]
+
+
 def test_cpu_move_accepts_candidate_with_null_pending_forced_move(tmp_path, monkeypatch):
     module = load_app(tmp_path, monkeypatch)
     client = TestClient(module.app)

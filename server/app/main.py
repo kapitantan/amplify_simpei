@@ -33,6 +33,7 @@ LLM_TOP_CANDIDATES = int(os.getenv("SIMPEI_LLM_TOP_CANDIDATES", "5"))
 HEURISTIC_MARGIN = int(os.getenv("SIMPEI_HEURISTIC_MARGIN", "80"))
 FEEDBACK_LOSS_PENALTY = int(os.getenv("SIMPEI_FEEDBACK_LOSS_PENALTY", "240"))
 FEEDBACK_WIN_BONUS = int(os.getenv("SIMPEI_FEEDBACK_WIN_BONUS", "35"))
+HEURISTIC_VERSION = "tactical-v2"
 
 PLAYERS = {"red", "blue"}
 ACTION_PLACE = "place"
@@ -48,6 +49,8 @@ CENTER_POINTS = {
     "upper-2-2",
     "lower-1-1",
 }
+POSITIONS = [f"{world}-{row}-{col}" for world, size in WORLDS.items() for row in range(size) for col in range(size)]
+FIRST_MOVE_TARGETS = {"upper-1-1", "upper-1-2", "upper-2-1", "upper-2-2"}
 
 MOVE_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -497,6 +500,11 @@ def evaluate_candidates(request: CpuMoveRequest, cache_key: str) -> list[dict[st
             "index": index,
         })
 
+    if any(evaluation["features"].get("opponent_immediate_wins", 0) > 0 for evaluation in evaluations):
+        for evaluation in evaluations:
+            if evaluation["features"].get("opponent_immediate_wins", 0) == 0:
+                evaluation["features"]["blocked_opponent_immediate_win"] = True
+
     evaluations.sort(key=lambda item: item["score"], reverse=True)
     return evaluations
 
@@ -519,6 +527,16 @@ def evaluate_state_after_action(
     elif winner == opponent:
         features["opponent_win"] = True
         score -= 10000
+
+    opponent_winning_actions = find_immediate_winning_actions(next_state, opponent)
+    opponent_immediate_wins = len(opponent_winning_actions)
+    if opponent_immediate_wins:
+        features["opponent_immediate_wins"] = opponent_immediate_wins
+        features["opponent_winning_actions"] = opponent_winning_actions
+        score -= opponent_immediate_wins * 1400
+        if opponent_immediate_wins > 1:
+            features["opponent_fork"] = True
+            score -= 2200
 
     cpu_threats = count_open_two_lines(board, cpu_player)
     opponent_threats = count_open_two_lines(board, opponent)
@@ -552,6 +570,7 @@ def evaluate_state_after_action(
         "opponent_open_twos": opponent_threats,
         "cpu_single_lines": cpu_lines,
         "opponent_single_lines": opponent_lines,
+        "opponent_immediate_wins": opponent_immediate_wins,
         "center_control_delta": center_control,
         "mobility_delta": mobility_hint,
     })
@@ -574,6 +593,183 @@ def count_single_lines(board: dict[str, Any], player: str) -> int:
         if values.count(player) == 1 and values.count(None) == 2:
             count += 1
     return count
+
+
+def find_immediate_winning_actions(state: dict[str, Any], player: str) -> list[dict[str, Any]]:
+    if state.get("winner") or state.get("pendingForcedMove") or state.get("currentPlayer") != player:
+        return []
+
+    winning_actions = []
+    for action in get_legal_actions_from_state(state):
+        if action_wins(state, action, player):
+            winning_actions.append(action)
+    return winning_actions
+
+
+def get_legal_actions_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    if state.get("winner"):
+        return []
+
+    board = state.get("board") or {}
+    pending_forced_move = state.get("pendingForcedMove")
+    if pending_forced_move:
+        pieces = pending_forced_move.get("pieces") or []
+        if not pieces:
+            return []
+        forced_piece = pieces[0]
+        return [
+            {"type": ACTION_FORCE_MOVE, "from": forced_piece.get("from"), "to": position_id}
+            for position_id in POSITIONS
+            if position_id != forced_piece.get("from") and board.get(position_id) is None
+        ]
+
+    phase = state.get("phase") or infer_phase(state)
+    if phase == "placement":
+        return [{"type": ACTION_PLACE, "to": target} for target in get_legal_placement_targets(state)]
+
+    move_actions = [
+        {"type": ACTION_MOVE, "from": from_id, "to": to_id}
+        for from_id in get_movable_pieces(state)
+        for to_id in get_legal_move_targets(state, from_id)
+    ]
+    return move_actions or [{"type": ACTION_PASS}]
+
+
+def get_legal_placement_targets(state: dict[str, Any]) -> list[str]:
+    board = state.get("board") or {}
+    turn_number = int(state.get("turnNumber", 0) or 0)
+    return [
+        position_id
+        for position_id in POSITIONS
+        if board.get(position_id) is None
+        and (turn_number != 1 or position_id in FIRST_MOVE_TARGETS)
+    ]
+
+
+def get_movable_pieces(state: dict[str, Any]) -> list[str]:
+    board = state.get("board") or {}
+    player = state.get("currentPlayer")
+    return [
+        position_id
+        for position_id in POSITIONS
+        if board.get(position_id) == player and get_legal_move_targets(state, position_id)
+    ]
+
+
+def get_legal_move_targets(state: dict[str, Any], from_id: str) -> list[str]:
+    board = state.get("board") or {}
+    if board.get(from_id) != state.get("currentPlayer"):
+        return []
+    return [position_id for position_id in get_adjacent_positions(from_id) if board.get(position_id) is None]
+
+
+def get_adjacent_positions(position_id: str) -> list[str]:
+    position = parse_position(position_id)
+    if not position:
+        return []
+
+    world, row, col = position
+    adjacent_coordinates = []
+    if world == "upper":
+        adjacent_coordinates = [
+            ("lower", row - 1, col - 1),
+            ("lower", row - 1, col),
+            ("lower", row, col - 1),
+            ("lower", row, col),
+        ]
+    else:
+        adjacent_coordinates = [
+            ("upper", row, col),
+            ("upper", row + 1, col),
+            ("upper", row, col + 1),
+            ("upper", row + 1, col + 1),
+        ]
+
+    return [
+        f"{adjacent_world}-{adjacent_row}-{adjacent_col}"
+        for adjacent_world, adjacent_row, adjacent_col in adjacent_coordinates
+        if is_inside(adjacent_world, adjacent_row, adjacent_col)
+    ]
+
+
+def action_wins(state: dict[str, Any], action: dict[str, Any], player: str) -> bool:
+    if action.get("type") not in {ACTION_PLACE, ACTION_MOVE}:
+        return False
+
+    to_id = action.get("to")
+    if not to_id:
+        return False
+
+    board = dict(state.get("board") or {})
+    if action.get("type") == ACTION_MOVE:
+        board[action.get("from")] = None
+    board[to_id] = player
+
+    position = parse_position(to_id)
+    if not position:
+        return False
+    world, _, _ = position
+    return get_exact_winning_line_containing(board, player, world, to_id) is not None
+
+
+def get_exact_winning_line_containing(
+    board: dict[str, Any],
+    player: str,
+    world: str,
+    position_id: str,
+) -> list[str] | None:
+    for entry in winning_line_entries(world):
+        if (
+            position_id in entry["ids"]
+            and all(board.get(line_position_id) == player for line_position_id in entry["ids"])
+            and all(board.get(extension_position_id) != player for extension_position_id in entry["extensions"])
+        ):
+            return entry["ids"]
+    return None
+
+
+def winning_line_entries(world: str) -> list[dict[str, list[str]]]:
+    size = WORLDS[world]
+    lines = []
+    for row in range(size):
+        for col in range(size):
+            for row_delta, col_delta in DIRECTIONS:
+                line = [
+                    (row, col),
+                    (row + row_delta, col + col_delta),
+                    (row + row_delta * 2, col + col_delta * 2),
+                ]
+                if not all(0 <= line_row < size and 0 <= line_col < size for line_row, line_col in line):
+                    continue
+                extensions = [
+                    (row - row_delta, col - col_delta),
+                    (row + row_delta * 3, col + col_delta * 3),
+                ]
+                lines.append({
+                    "ids": [f"{world}-{line_row}-{line_col}" for line_row, line_col in line],
+                    "extensions": [
+                        f"{world}-{extension_row}-{extension_col}"
+                        for extension_row, extension_col in extensions
+                        if 0 <= extension_row < size and 0 <= extension_col < size
+                    ],
+                })
+
+    unique = {}
+    for line in lines:
+        unique["|".join(line["ids"])] = line
+    return list(unique.values())
+
+
+def infer_phase(state: dict[str, Any]) -> str:
+    placed_count = state.get("placedCount") or {}
+    red_count = int(placed_count.get("red", 0) or 0)
+    blue_count = int(placed_count.get("blue", 0) or 0)
+    if red_count or blue_count:
+        return "movement" if red_count + blue_count >= 8 else "placement"
+
+    board = state.get("board") or {}
+    occupied_count = sum(1 for occupant in board.values() if occupant in PLAYERS)
+    return "movement" if occupied_count >= 8 else "placement"
 
 
 def winning_lines() -> list[list[str]]:
@@ -672,6 +868,8 @@ def build_heuristic_reason(evaluation: dict[str, Any] | None) -> str:
     features = evaluation["features"]
     if features.get("immediate_win"):
         return "Heuristic: selected an immediate winning move."
+    if features.get("blocked_opponent_immediate_win"):
+        return "Heuristic: selected a move that avoids immediate opponent wins."
     if features.get("created_forced_move"):
         return "Heuristic: selected a move that creates a forced relocation."
     return f"Heuristic: selected the top-scored move ({evaluation['score']})."
@@ -679,6 +877,7 @@ def build_heuristic_reason(evaluation: dict[str, Any] | None) -> str:
 
 def build_cache_key(request: CpuMoveRequest) -> str:
     payload = {
+        "heuristic_version": HEURISTIC_VERSION,
         "model": OLLAMA_MODEL,
         "difficulty": request.difficulty,
         "cpu_player": request.cpu_player,
