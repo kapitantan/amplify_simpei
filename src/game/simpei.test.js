@@ -140,6 +140,83 @@ describe("simpei rules", () => {
     assert.equal(moved.currentPlayer, PLAYERS.BLUE);
   });
 
+  it("does not win by covering an already completed line during placement", () => {
+    const initial = createInitialGame();
+    const target = getPositionId(WORLDS.UPPER, 0, 1);
+    const state = {
+      ...initial,
+      currentPlayer: PLAYERS.RED,
+      phase: "placement",
+      turnNumber: 7,
+      placedCount: {
+        [PLAYERS.RED]: 3,
+        [PLAYERS.BLUE]: 3,
+      },
+      board: {
+        ...initial.board,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: PLAYERS.RED,
+        [target]: PLAYERS.RED,
+        [getPositionId(WORLDS.UPPER, 0, 2)]: PLAYERS.RED,
+      },
+      stacks: {
+        ...initial.stacks,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: [initial.pieces["red-MID"]],
+        [target]: [initial.pieces["red-SMALL_1"]],
+        [getPositionId(WORLDS.UPPER, 0, 2)]: [initial.pieces["red-SMALL_2"]],
+      },
+    };
+
+    const covered = placePiece(state, target, "red-BIG");
+
+    assert.deepEqual(covered.stacks[target].map((piece) => piece.id), [
+      "red-SMALL_1",
+      "red-BIG",
+    ]);
+    assert.equal(covered.winner, null);
+    assert.equal(covered.winningLine, null);
+    assert.equal(covered.currentPlayer, PLAYERS.BLUE);
+  });
+
+  it("does not win by moving onto an already completed line", () => {
+    const initial = createInitialGame();
+    const from = getPositionId(WORLDS.LOWER, 0, 0);
+    const target = getPositionId(WORLDS.UPPER, 0, 1);
+    const state = {
+      ...initial,
+      currentPlayer: PLAYERS.RED,
+      phase: "movement",
+      turnNumber: 9,
+      placedCount: {
+        [PLAYERS.RED]: 4,
+        [PLAYERS.BLUE]: 4,
+      },
+      board: {
+        ...initial.board,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: PLAYERS.RED,
+        [target]: PLAYERS.RED,
+        [getPositionId(WORLDS.UPPER, 0, 2)]: PLAYERS.RED,
+        [from]: PLAYERS.RED,
+      },
+      stacks: {
+        ...initial.stacks,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: [initial.pieces["red-MID"]],
+        [target]: [initial.pieces["red-SMALL_1"]],
+        [getPositionId(WORLDS.UPPER, 0, 2)]: [initial.pieces["red-SMALL_2"]],
+        [from]: [initial.pieces["red-BIG"]],
+      },
+    };
+
+    const covered = movePiece(state, from, target);
+
+    assert.deepEqual(covered.stacks[target].map((piece) => piece.id), [
+      "red-SMALL_1",
+      "red-BIG",
+    ]);
+    assert.equal(covered.winner, null);
+    assert.equal(covered.winningLine, null);
+    assert.equal(covered.currentPlayer, PLAYERS.BLUE);
+  });
+
   it("does not treat lines across worlds as wins", () => {
     const board = emptyBoard();
     board[getPositionId(WORLDS.UPPER, 0, 0)] = PLAYERS.RED;

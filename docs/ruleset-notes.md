@@ -9,6 +9,7 @@ Included:
 - Each player has one size-3 piece, one size-2 piece, and two size-1 pieces.
 - Larger pieces can cover smaller top pieces.
 - Top pieces alone count for ownership, wins, movement, and sandwich captures.
+- Wins require creating a new exact line from a state with no existing exact line.
 - Moving or relocating the top piece reveals the covered piece below.
 - Revealed pieces never trigger wins or sandwich chains by themselves.
 - Forced relocation moves only the top piece and can land only on empty cells.

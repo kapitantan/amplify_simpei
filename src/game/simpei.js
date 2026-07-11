@@ -260,6 +260,7 @@ export function placePiece(state, toId, pieceId = null) {
   }
 
   const player = state.currentPlayer;
+  const previousBoard = state.board;
   const stacks = pushPiece(getStacks(state), toId, piece);
 
   const nextState = {
@@ -272,7 +273,7 @@ export function placePiece(state, toId, pieceId = null) {
     },
   };
 
-  return finishTurnAction(nextState, player, toId);
+  return finishTurnAction(nextState, player, toId, previousBoard);
 }
 
 export function movePiece(state, fromId, toId) {
@@ -281,10 +282,10 @@ export function movePiece(state, fromId, toId) {
   }
 
   const player = state.currentPlayer;
-  const movingPiece = getTopPiece(state, fromId);
+  const previousBoard = state.board;
   const stacks = moveTopPiece(getStacks(state), fromId, toId);
 
-  return finishTurnAction({ ...state, board: getBoardFromStacks(stacks), stacks }, player, toId, movingPiece);
+  return finishTurnAction({ ...state, board: getBoardFromStacks(stacks), stacks }, player, toId, previousBoard);
 }
 
 export function passTurn(state) {
@@ -413,11 +414,14 @@ function findSandwichBoundary(board, opponent, world, row, col, rowDelta, colDel
   return null;
 }
 
-function finishTurnAction(state, player, actionPositionId) {
+function finishTurnAction(state, player, actionPositionId, previousBoard) {
   const winningLine = Object.values(WORLDS)
     .map((world) => getExactWinningLineContaining(state.board, player, world, actionPositionId))
     .find(Boolean) ?? null;
-  const winner = winningLine ? player : null;
+  const hadWinningLine = previousBoard
+    ? Object.values(WORLDS).some((world) => hasExactWinningLine(previousBoard, player, world))
+    : false;
+  const winner = winningLine && !hadWinningLine ? player : null;
 
   if (winner) {
     return {
