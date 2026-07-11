@@ -11,7 +11,11 @@ import {
   View,
 } from "@aws-amplify/ui-react";
 import { getUrl, uploadData } from "aws-amplify/storage";
-import { noteModel, usesTodoFallback } from "../lib/amplifyClient";
+import {
+  isAmplifyConfigured,
+  noteModel,
+  usesTodoFallback,
+} from "../lib/amplifyClient";
 
 function normalizeNote(record) {
   if (!usesTodoFallback) {
@@ -52,6 +56,13 @@ export default function NotesPage() {
   }, []);
 
   async function fetchNotes() {
+    if (!isAmplifyConfigured) {
+      setError(
+        "Amplify の設定ファイルがありません。`npx ampx sandbox` などで amplify_outputs.json を生成してください。"
+      );
+      return;
+    }
+
     if (!noteModel) {
       setError("利用できるデータモデルがありません。");
       return;
@@ -82,6 +93,11 @@ export default function NotesPage() {
 
   async function createNote(event) {
     event.preventDefault();
+
+    if (!noteModel) {
+      setError("利用できるデータモデルがありません。");
+      return;
+    }
 
     const form = new FormData(event.target);
     const image = form.get("image");
