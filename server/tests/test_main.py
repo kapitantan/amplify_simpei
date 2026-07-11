@@ -1,4 +1,5 @@
 import importlib
+import json
 
 from fastapi.testclient import TestClient
 
@@ -114,12 +115,53 @@ def test_cpu_move_uses_heuristic_immediate_win_without_llm(tmp_path, monkeypatch
 
     with module.connect() as db:
         row = db.execute(
-            "SELECT candidate_evaluations_json, source FROM moves WHERE match_id = ?",
+            "SELECT candidate_evaluations_json, game_state_after_json, source FROM moves WHERE match_id = ?",
             (match_id,),
         ).fetchone()
 
     assert row["source"] == "heuristic"
     assert "immediate_win" in row["candidate_evaluations_json"]
+    assert '"winner":"blue"' in row["game_state_after_json"]
+
+
+def test_cpu_move_falls_back_when_ml_model_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPEI_CPU_POLICY", "ml")
+    monkeypatch.setenv("SIMPEI_POLICY_MODEL_PATH", str(tmp_path / "missing.pt"))
+    module = load_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    legal_actions = [{"type": "place", "to": "upper-1-1"}]
+
+    response = client.post(
+        "/cpu/move",
+        json={
+            "game_state": {"turnNumber": 1, "board": {}, "currentPlayer": "blue"},
+            "legal_actions": legal_actions,
+            "candidate_actions": [
+                {
+                    "action": legal_actions[0],
+                    "next_state": {"winner": None, "board": {"upper-1-1": "blue"}},
+                }
+            ],
+            "cpu_player": "blue",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected_action"] == legal_actions[0]
+    assert response.json()["source"] == "heuristic"
+
+
+def test_place_action_matching_includes_piece_id(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+
+    assert module.is_legal_action(
+        {"type": "place", "pieceId": "red-BIG", "to": "upper-1-1"},
+        [{"type": "place", "pieceId": "red-SMALL_1", "to": "upper-1-1"}],
+    ) is False
+    assert module.is_legal_action(
+        {"type": "forceMove", "from": "upper-1-1", "to": "lower-0-0"},
+        [{"type": "forceMove", "pieceId": "red-BIG", "from": "upper-1-1", "to": "lower-0-0"}],
+    ) is True
 
 
 def test_cpu_move_avoids_allowing_opponent_immediate_fork(tmp_path, monkeypatch):
@@ -440,3 +482,45 @@ def test_records_color_specific_outcomes_for_auto_learning_match(tmp_path, monke
         ).fetchall()
 
     assert [(row["player"], row["outcome"]) for row in rows] == [("red", "win"), ("blue", "loss")]
+
+
+def test_exports_completed_cpu_moves_for_ml_training(tmp_path, monkeypatch):
+    module = load_app(tmp_path, monkeypatch)
+    from server.ml.export_dataset import export_dataset
+
+    client = TestClient(module.app)
+    match_id = client.post("/matches", json={"human_player": "none", "cpu_player": "both"}).json()["match_id"]
+    legal_actions = [{"type": "place", "pieceId": "red-BIG", "to": "upper-1-1"}]
+    move_response = client.post(
+        "/cpu/move",
+        json={
+            "match_id": match_id,
+            "game_state": {"turnNumber": 1, "board": {}, "currentPlayer": "red"},
+            "legal_actions": legal_actions,
+            "candidate_actions": [
+                {
+                    "action": legal_actions[0],
+                    "next_state": {"winner": "red", "board": {"upper-1-1": "red"}},
+                }
+            ],
+            "cpu_player": "red",
+        },
+    )
+    result_response = client.patch(
+        f"/matches/{match_id}/result",
+        json={"winner": "red", "reason": "winner", "final_state": {"winner": "red"}},
+    )
+
+    assert move_response.status_code == 200
+    assert result_response.status_code == 200
+
+    output_path = tmp_path / "policy_value.jsonl"
+    count = export_dataset(module.DATABASE_PATH, output_path)
+    sample = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert count == 1
+    assert sample["value"] == 1.0
+    assert sample["chosen_index"] == 0
+    assert sample["selected_action"] == legal_actions[0]
+    assert sample["state_features"]
+    assert sample["action_features"]

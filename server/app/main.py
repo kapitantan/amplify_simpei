@@ -15,10 +15,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .ml_policy import load_policy_model
+
 
 DATABASE_PATH = Path(os.getenv("SIMPEI_DATABASE_PATH", "server/data/simpei_cpu.sqlite3"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b")
+CPU_POLICY = os.getenv("SIMPEI_CPU_POLICY", "heuristic").strip().lower()
+POLICY_MODEL_PATH = os.getenv("SIMPEI_POLICY_MODEL_PATH", "server/models/simpei_policy_value.pt")
 ALLOWED_ORIGINS_VALUE = os.getenv("SIMPEI_ALLOWED_ORIGINS", "")
 ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_VALUE.split(",") if origin.strip()]
 ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS_VALUE.strip() == "*"
@@ -54,6 +58,7 @@ POSITIONS = [f"{world}-{row}-{col}" for world, size in WORLDS.items() for row in
 FIRST_MOVE_TARGETS = {"upper-1-1", "upper-1-2", "upper-2-1", "upper-2-2"}
 
 MOVE_CACHE: dict[str, dict[str, Any]] = {}
+POLICY_MODEL = None
 
 
 class MatchCreateRequest(BaseModel):
@@ -187,11 +192,12 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
     started_at = time.perf_counter()
     cache_key = build_cache_key(request)
     candidate_evaluations = evaluate_candidates(request, cache_key)
+    policy_applied = apply_policy_model(request, candidate_evaluations)
     ranked_actions = [evaluation["action"] for evaluation in candidate_evaluations] or request.legal_actions
     selected_action = ranked_actions[0]
     reason = "Heuristic fallback: selected the highest-scored legal action."
     fallback = True
-    source = "heuristic"
+    source = "ml" if policy_applied and CPU_POLICY == "ml" else "hybrid" if policy_applied else "heuristic"
     cache_hit = False
 
     cached_action = MOVE_CACHE.get(cache_key) or load_cached_action(cache_key)
@@ -210,7 +216,10 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
         second_score = candidate_evaluations[1]["score"] if len(candidate_evaluations) > 1 else None
         should_skip_llm = top_score >= 9000 or second_score is None or top_score - second_score >= HEURISTIC_MARGIN
 
-        if not should_skip_llm:
+        if policy_applied:
+            reason = build_policy_reason(candidate_evaluations[0] if candidate_evaluations else None)
+            fallback = False
+        elif not should_skip_llm:
             llm_candidates = ranked_actions[:LLM_TOP_CANDIDATES]
             try:
                 llm_action, llm_reason = await ask_ollama(request, llm_candidates)
@@ -256,6 +265,7 @@ async def cpu_move(request: CpuMoveRequest) -> CpuMoveResponse:
             candidate_evaluations=candidate_evaluations,
             source=response.source,
             cache_key=cache_key,
+            game_state_after=find_selected_next_state(request, response.selected_action),
         )
 
     return response
@@ -463,12 +473,20 @@ def insert_move(
         )
 
 
+def find_selected_next_state(request: CpuMoveRequest, selected_action: dict[str, Any]) -> dict[str, Any] | None:
+    for candidate in request.candidate_actions:
+        if action_key(candidate.action) == action_key(selected_action):
+            return candidate.next_state
+    return None
+
+
 def is_legal_action(action: dict[str, Any], legal_actions: list[dict[str, Any]]) -> bool:
     return any(action_key(action) == action_key(legal_action) for legal_action in legal_actions)
 
 
-def action_key(action: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
-    return action.get("type"), action.get("from"), action.get("to")
+def action_key(action: dict[str, Any]) -> tuple[str | None, str | None, str | None, str | None]:
+    piece_id = action.get("pieceId") if action.get("type") == ACTION_PLACE else None
+    return action.get("type"), piece_id, action.get("from"), action.get("to")
 
 
 def evaluate_candidates(request: CpuMoveRequest, cache_key: str) -> list[dict[str, Any]]:
@@ -863,6 +881,45 @@ def action_key_text(action: dict[str, Any]) -> str:
     return ":".join(str(part or "") for part in action_key(action))
 
 
+def get_policy_model():
+    global POLICY_MODEL
+    if CPU_POLICY not in {"hybrid", "ml"}:
+        return None
+    if POLICY_MODEL is None:
+        POLICY_MODEL = load_policy_model(POLICY_MODEL_PATH)
+    return POLICY_MODEL
+
+
+def apply_policy_model(request: CpuMoveRequest, candidate_evaluations: list[dict[str, Any]]) -> bool:
+    policy_model = get_policy_model()
+    if not policy_model or not candidate_evaluations:
+        return False
+
+    actions = [evaluation["action"] for evaluation in candidate_evaluations]
+    logits, value = policy_model.score_actions(request.game_state, actions, request.cpu_player)
+    for evaluation, logit in zip(candidate_evaluations, logits):
+        evaluation["ml_score"] = logit
+        evaluation["ml_value"] = value
+        evaluation["features"]["ml_score"] = logit
+        evaluation["features"]["ml_value"] = value
+        if CPU_POLICY == "hybrid":
+            evaluation["score"] += round(logit * 100)
+        else:
+            evaluation["score"] = round(logit * 1000)
+
+    candidate_evaluations.sort(key=lambda item: item["score"], reverse=True)
+    return True
+
+
+def build_policy_reason(evaluation: dict[str, Any] | None) -> str:
+    if not evaluation:
+        return "ML policy: selected the first legal action."
+    return (
+        f"ML policy: selected the top-scored move "
+        f"(policy={CPU_POLICY}, score={evaluation['score']}, value={evaluation.get('ml_value', 0):.3f})."
+    )
+
+
 def build_heuristic_reason(evaluation: dict[str, Any] | None) -> str:
     if not evaluation:
         return "Heuristic fallback: selected the first legal action."
@@ -879,6 +936,8 @@ def build_heuristic_reason(evaluation: dict[str, Any] | None) -> str:
 def build_cache_key(request: CpuMoveRequest) -> str:
     payload = {
         "heuristic_version": HEURISTIC_VERSION,
+        "cpu_policy": CPU_POLICY,
+        "policy_model": policy_model_cache_tag(),
         "model": OLLAMA_MODEL,
         "difficulty": request.difficulty,
         "cpu_player": request.cpu_player,
@@ -893,6 +952,22 @@ def build_cache_key(request: CpuMoveRequest) -> str:
         ],
     }
     return sha256(dumps(payload).encode("utf-8")).hexdigest()
+
+
+def policy_model_cache_tag() -> dict[str, Any] | str:
+    if CPU_POLICY not in {"hybrid", "ml"}:
+        return ""
+
+    path = Path(POLICY_MODEL_PATH)
+    if not path.exists():
+        return {"path": POLICY_MODEL_PATH, "missing": True}
+
+    stat = path.stat()
+    return {
+        "path": POLICY_MODEL_PATH,
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
 
 
 def load_cached_action(cache_key: str) -> dict[str, Any] | None:

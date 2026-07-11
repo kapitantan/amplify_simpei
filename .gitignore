@@ -33,3 +33,4 @@ amplifyconfiguration*
 __pycache__
 *.py[cod]
 server/data/
+server/models/
