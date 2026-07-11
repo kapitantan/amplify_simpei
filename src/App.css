@@ -267,6 +267,18 @@
   animation: piece-land 140ms ease-out;
 }
 
+.piece.size-1 {
+  width: 66%;
+}
+
+.piece.size-2 {
+  width: 78%;
+}
+
+.piece.size-3 {
+  width: 92%;
+}
+
 .flying-piece {
   position: absolute;
   z-index: 5;
@@ -318,6 +330,39 @@
     inset 8px 9px 8px rgba(255, 255, 255, 0.24),
     inset -7px -9px 12px rgba(0, 0, 0, 0.3),
     0 3px 0 rgba(0, 0, 0, 0.2);
+}
+
+.piece-size-badge,
+.stack-count {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
+}
+
+.piece-size-badge {
+  right: 5%;
+  bottom: 8%;
+  width: 26%;
+  min-width: 14px;
+  aspect-ratio: 1;
+  font-size: 0.65rem;
+}
+
+.stack-count {
+  left: -4%;
+  top: -5%;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 4px;
+  background: #facc15;
+  font-size: 0.68rem;
 }
 
 .piece-head::before {
@@ -505,6 +550,48 @@
   gap: 12px;
   flex-wrap: wrap;
   color: #475569;
+}
+
+.game-controls .piece-tray {
+  flex: 1 1 100%;
+  align-items: center;
+}
+
+.piece-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.piece-choice.selected {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
+}
+
+.piece-choice:disabled {
+  color: #94a3b8;
+}
+
+.piece-size {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #0f172a;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.piece-choice.red .piece-size {
+  background: #fecaca;
+  color: #7f1d1d;
+}
+
+.piece-choice.blue .piece-size {
+  background: #bfdbfe;
+  color: #1e3a8a;
 }
 
 .notes-page {

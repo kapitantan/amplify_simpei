@@ -12,6 +12,8 @@ import {
   getLegalPlacementTargets,
   getMovablePieces,
   getPlayerLabel,
+  getTopPiece,
+  getUnplacedPieces,
   isLegalAction,
   markDraw,
 } from "../game/simpei";
@@ -30,9 +32,14 @@ const CPU_TURN_DELAY_MS = 360;
 const REPETITION_DRAW_COUNT = 3;
 const MAX_MATCH_HISTORY_LENGTH = 180;
 
+function isTerminalGame(state) {
+  return Boolean(state.winner || state.drawReason);
+}
+
 export default function GamePage() {
   const [game, setGame] = useState(() => createInitialGame());
   const [selectedPiece, setSelectedPiece] = useState(null);
+  const [selectedPlacementPieceId, setSelectedPlacementPieceId] = useState(null);
   const [cpuMode, setCpuMode] = useState(false);
   const [autoLearnMode, setAutoLearnMode] = useState(false);
   const [cpuThinking, setCpuThinking] = useState(false);
@@ -68,7 +75,14 @@ export default function GamePage() {
   const boardRef = useRef(null);
   const pointRefs = useRef(new Map());
 
-  const legalPlacementTargets = useMemo(() => new Set(getLegalPlacementTargets(game)), [game]);
+  const placementPieces = useMemo(() => getUnplacedPieces(game, game.currentPlayer), [game]);
+  const currentPlacementPiece = placementPieces.find((piece) => piece.id === selectedPlacementPieceId)
+    ?? placementPieces[0]
+    ?? null;
+  const legalPlacementTargets = useMemo(
+    () => new Set(getLegalPlacementTargets(game, currentPlacementPiece?.id ?? null)),
+    [game, currentPlacementPiece?.id]
+  );
   const forcedMoveTargets = useMemo(() => new Set(getForcedMoveTargets(game)), [game]);
   const movablePieces = useMemo(() => new Set(getMovablePieces(game)), [game]);
   const legalMoveTargets = useMemo(() => (
@@ -146,6 +160,7 @@ export default function GamePage() {
       from: piece.from,
       to: toId,
       player: piece.player,
+      pieceSize: piece.size ?? 1,
       left: fromRect.left + fromRect.width / 2 - boardRect.left,
       top: fromRect.top + fromRect.height / 2 - boardRect.top,
       size: fromRect.width,
@@ -374,7 +389,11 @@ export default function GamePage() {
         return;
       }
 
-      const result = commitAction({ type: ACTION_TYPES.PLACE, to: positionId });
+      const result = commitAction({
+        type: ACTION_TYPES.PLACE,
+        pieceId: currentPlacementPiece?.id,
+        to: positionId,
+      });
       playEffect({ type: "placed", id: positionId }, result?.nextGame.pendingForcedMove ? 380 : 240);
       return;
     }
@@ -419,6 +438,7 @@ export default function GamePage() {
     setCurrentGame(nextGame);
     resetStateVisits(nextGame);
     setSelectedPiece(null);
+    setSelectedPlacementPieceId(null);
     setMoveHistory([]);
     historyRef.current = [];
     resultRecordedRef.current = false;
@@ -528,13 +548,10 @@ export default function GamePage() {
     return nextGame;
   }
 
-  function isTerminalGame(state) {
-    return Boolean(state.winner || state.drawReason);
-  }
-
   function getStateRepetitionKey(state) {
     return JSON.stringify({
       board: state.board,
+      stacks: state.stacks,
       currentPlayer: state.currentPlayer,
       phase: state.phase,
       pendingForcedMove: state.pendingForcedMove,
@@ -607,6 +624,28 @@ export default function GamePage() {
       </section>
 
       <section className="game-controls">
+        {game.phase === "placement" && placementPieces.length > 0 && (
+          <div className="piece-tray" aria-label="配置する手駒">
+            <strong>配置する駒</strong>
+            {placementPieces.map((piece) => (
+              <button
+                key={piece.id}
+                type="button"
+                className={[
+                  "piece-choice",
+                  piece.owner,
+                  currentPlacementPiece?.id === piece.id ? "selected" : "",
+                ].filter(Boolean).join(" ")}
+                onClick={() => setSelectedPlacementPieceId(piece.id)}
+                disabled={isCpuTurnInView || uiEffect.locked}
+                aria-pressed={currentPlacementPiece?.id === piece.id}
+              >
+                <span className={`piece-size size-${piece.size}`}>{getPieceSizeLabel(piece.size)}</span>
+                <span>{getPieceRoleLabel(piece)}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <button
           type="button"
           onClick={handlePass}
@@ -666,6 +705,30 @@ function getGameStatusLabel(game) {
   return `${getPlayerLabel(game.currentPlayer)}の手番`;
 }
 
+function getPieceRoleLabel(piece) {
+  if (!piece) {
+    return "";
+  }
+
+  if (piece.size === 3) {
+    return "大";
+  }
+  if (piece.size === 2) {
+    return "中";
+  }
+  return piece.id.endsWith("SMALL_2") ? "小2" : "小1";
+}
+
+function getPieceSizeLabel(size) {
+  if (size === 3) {
+    return "3";
+  }
+  if (size === 2) {
+    return "2";
+  }
+  return "1";
+}
+
 function IntegratedBoard({
   game,
   boardRef,
@@ -706,6 +769,8 @@ function IntegratedBoard({
         ))}
         {POSITIONS.map(({ id, world, row, col }) => {
           const occupant = game.board[id];
+          const stack = game.stacks?.[id] ?? [];
+          const topPiece = getTopPiece(game, id);
           const isSelected = selectedPiece === id;
           const isForcedPiece = forcedPieceId === id;
           const isLegalTarget = legalPlacementTargets.has(id)
@@ -717,6 +782,9 @@ function IntegratedBoard({
           const isRecentAction = uiEffect.action?.id === id;
           const isWinningPoint = game.winningLine?.includes(id);
           const label = `${getWorldLabel(world)} ${row + 1}行 ${col + 1}列`;
+          const stackLabel = topPiece
+            ? `${getPlayerLabel(topPiece.owner)}の${getPieceRoleLabel(topPiece)}、スタック${stack.length}段`
+            : "空き";
           const gridPosition = getBoardGridPosition(world, row, col);
 
           return (
@@ -748,14 +816,16 @@ function IntegratedBoard({
                   pointRefs.current.delete(id);
                 }
               }}
-              aria-label={occupant ? `${label}: ${getPlayerLabel(occupant)}の駒` : `${label}: 空き`}
+              aria-label={`${label}: ${stackLabel}`}
             >
               <span className="point-hole" />
               {isLegalTarget && !occupant && <span className="target-marker" />}
               {occupant && flyingPiece?.from !== id && (
-                <span className="piece">
+                <span className={`piece size-${topPiece?.size ?? 1}`} title={stackLabel}>
                   <span className="piece-head">{getPlayerLabel(occupant)}</span>
+                  <span className="piece-size-badge">{topPiece?.size ?? 1}</span>
                   <span className="piece-stem" />
+                  {stack.length > 1 && <span className="stack-count">{stack.length}</span>}
                 </span>
               )}
               {!occupant && <span className="point-label">{getPointLabel(world, row, col)}</span>}
@@ -774,8 +844,9 @@ function IntegratedBoard({
             }}
             aria-hidden="true"
           >
-            <span className="piece">
+            <span className={`piece size-${flyingPiece.pieceSize ?? 1}`}>
               <span className="piece-head">{getPlayerLabel(flyingPiece.player)}</span>
+              <span className="piece-size-badge">{flyingPiece.pieceSize ?? 1}</span>
               <span className="piece-stem" />
             </span>
           </span>

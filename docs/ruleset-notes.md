@@ -10,7 +10,10 @@ Included:
 - Larger pieces can cover smaller top pieces.
 - Top pieces alone count for ownership, wins, movement, and sandwich captures.
 - Moving or relocating the top piece reveals the covered piece below.
+- Revealed pieces never trigger wins or sandwich chains by themselves.
 - Forced relocation moves only the top piece and can land only on empty cells.
+- During placement, players can choose which remaining size piece to place.
+- The board shows the visible top piece size and stack depth.
 
 Excluded:
 

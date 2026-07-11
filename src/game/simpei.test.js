@@ -70,9 +70,9 @@ describe("simpei rules", () => {
       getPositionId(WORLDS.UPPER, 2, 2),
     ]));
 
-    const action = { type: ACTION_TYPES.PLACE, to: getPositionId(WORLDS.UPPER, 1, 1) };
+    const action = { type: ACTION_TYPES.PLACE, pieceId: "red-BIG", to: getPositionId(WORLDS.UPPER, 1, 1) };
     assert.equal(isLegalAction(state, action), true);
-    assert.equal(getActionKey(action), "place::upper-1-1");
+    assert.equal(getActionKey(action), "place:red-BIG::upper-1-1");
 
     const nextState = applyAction(state, action);
     assert.equal(nextState.board[getPositionId(WORLDS.UPPER, 1, 1)], PLAYERS.RED);
@@ -189,6 +189,26 @@ describe("simpei rules", () => {
     ]);
   });
 
+  it("uses the selected unplaced piece size for placement targets", () => {
+    let state = createInitialGame();
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 1), "red-SMALL_1");
+    state = placePiece(state, getPositionId(WORLDS.LOWER, 0, 0), "blue-SMALL_1");
+
+    const occupiedTarget = getPositionId(WORLDS.LOWER, 0, 0);
+    assert.equal(getLegalPlacementTargets(state, "red-MID").includes(occupiedTarget), true);
+    assert.equal(getLegalPlacementTargets(state, "red-SMALL_2").includes(occupiedTarget), false);
+
+    const covered = placePiece(state, occupiedTarget, "red-MID");
+    assert.deepEqual(covered.stacks[occupiedTarget].map((piece) => piece.id), [
+      "blue-SMALL_1",
+      "red-MID",
+    ]);
+
+    const reused = placePiece(covered, getPositionId(WORLDS.UPPER, 1, 2), "red-MID");
+    assert.equal(reused.board[getPositionId(WORLDS.UPPER, 1, 2)], null);
+    assert.match(reused.message, /配置できません/);
+  });
+
   it("reveals covered pieces when the top piece moves away", () => {
     let state = createInitialGame();
     state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 1), "red-SMALL_1");
@@ -209,6 +229,43 @@ describe("simpei rules", () => {
 
     assert.equal(moved.board[getPositionId(WORLDS.LOWER, 0, 0)], PLAYERS.BLUE);
     assert.equal(moved.board[getPositionId(WORLDS.UPPER, 0, 1)], PLAYERS.RED);
+  });
+
+  it("does not win when moving a top piece reveals a covered line", () => {
+    const initial = createInitialGame();
+    const from = getPositionId(WORLDS.UPPER, 0, 1);
+    const to = getPositionId(WORLDS.LOWER, 0, 0);
+    const state = {
+      ...initial,
+      currentPlayer: PLAYERS.RED,
+      phase: "movement",
+      turnNumber: 9,
+      placedCount: {
+        [PLAYERS.RED]: 4,
+        [PLAYERS.BLUE]: 4,
+      },
+      board: {
+        ...initial.board,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: PLAYERS.BLUE,
+        [from]: PLAYERS.RED,
+        [getPositionId(WORLDS.UPPER, 0, 2)]: PLAYERS.BLUE,
+      },
+      stacks: {
+        ...initial.stacks,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: [initial.pieces["blue-SMALL_1"]],
+        [from]: [initial.pieces["blue-SMALL_2"], initial.pieces["red-BIG"]],
+        [getPositionId(WORLDS.UPPER, 0, 2)]: [initial.pieces["blue-MID"]],
+      },
+    };
+
+    const moved = movePiece(state, from, to);
+
+    assert.equal(moved.board[from], PLAYERS.BLUE);
+    assert.equal(moved.board[to], PLAYERS.RED);
+    assert.equal(moved.winner, null);
+    assert.equal(moved.winningLine, null);
+    assert.equal(moved.pendingForcedMove, null);
+    assert.equal(moved.currentPlayer, PLAYERS.BLUE);
   });
 
   it("lists move actions or pass actions in movement phase", () => {
@@ -345,6 +402,56 @@ describe("simpei rules", () => {
     assert.equal(state.winner, null);
     assert.equal(state.pendingForcedMove, null);
     assert.equal(state.currentPlayer, PLAYERS.BLUE);
+  });
+
+  it("relocates only the top piece from a stack without triggering exposed wins", () => {
+    const initial = createInitialGame();
+    const from = getPositionId(WORLDS.UPPER, 0, 1);
+    const to = getPositionId(WORLDS.LOWER, 0, 0);
+    const state = {
+      ...initial,
+      currentPlayer: PLAYERS.BLUE,
+      phase: "movement",
+      turnNumber: 9,
+      placedCount: {
+        [PLAYERS.RED]: 4,
+        [PLAYERS.BLUE]: 4,
+      },
+      board: {
+        ...initial.board,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: PLAYERS.BLUE,
+        [from]: PLAYERS.RED,
+        [getPositionId(WORLDS.UPPER, 0, 2)]: PLAYERS.BLUE,
+      },
+      stacks: {
+        ...initial.stacks,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: [initial.pieces["blue-SMALL_1"]],
+        [from]: [initial.pieces["blue-SMALL_2"], initial.pieces["red-BIG"]],
+        [getPositionId(WORLDS.UPPER, 0, 2)]: [initial.pieces["blue-MID"]],
+      },
+      pendingForcedMove: {
+        player: PLAYERS.BLUE,
+        pieces: [
+          {
+            from,
+            id: "red-BIG",
+            player: PLAYERS.RED,
+            size: 3,
+          },
+        ],
+      },
+    };
+
+    const moved = forceMovePiece(state, to);
+
+    assert.deepEqual(moved.stacks[from].map((piece) => piece.id), ["blue-SMALL_2"]);
+    assert.deepEqual(moved.stacks[to].map((piece) => piece.id), ["red-BIG"]);
+    assert.equal(moved.board[from], PLAYERS.BLUE);
+    assert.equal(moved.board[to], PLAYERS.RED);
+    assert.equal(moved.winner, null);
+    assert.equal(moved.winningLine, null);
+    assert.equal(moved.pendingForcedMove, null);
+    assert.equal(moved.currentPlayer, PLAYERS.RED);
   });
 
   it("allows every piece to be moved when two contiguous pieces are sandwiched", () => {
