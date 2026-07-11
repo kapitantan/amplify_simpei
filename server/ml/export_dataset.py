@@ -16,14 +16,20 @@ def main() -> None:
     args = parser.parse_args()
 
     output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     count = export_dataset(Path(args.database), output_path)
     print(f"exported {count} samples to {output_path}")
 
 
 def export_dataset(database_path: Path, output_path: Path) -> int:
-    with sqlite3.connect(database_path) as db, output_path.open("w", encoding="utf-8") as output:
+    if not database_path.exists():
+        raise SystemExit(
+            f"database not found: {database_path}. "
+            "Run auto learning with SIMPEI_DATABASE_PATH set to this path before exporting."
+        )
+
+    with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
+        ensure_export_schema(db, database_path)
         rows = db.execute(
             """
             SELECT m.id, m.match_id, m.player, m.turn_number, m.action_json, m.legal_actions_json,
@@ -35,14 +41,37 @@ def export_dataset(database_path: Path, output_path: Path) -> int:
             """
         ).fetchall()
 
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         sample_count = 0
-        for row in rows:
-            sample = build_sample(row)
-            if not sample:
-                continue
-            output.write(json.dumps(sample, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
-            sample_count += 1
+        with output_path.open("w", encoding="utf-8") as output:
+            for row in rows:
+                sample = build_sample(row)
+                if not sample:
+                    continue
+                output.write(json.dumps(sample, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+                sample_count += 1
         return sample_count
+
+
+def ensure_export_schema(db: sqlite3.Connection, database_path: Path) -> None:
+    table_names = {
+        row["name"]
+        for row in db.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name IN ('matches', 'moves')
+            """
+        ).fetchall()
+    }
+    missing_tables = sorted({"matches", "moves"} - table_names)
+    if missing_tables:
+        missing = ", ".join(missing_tables)
+        raise SystemExit(
+            f"database {database_path} is not initialized for CPU learning; missing table(s): {missing}. "
+            "Start the CPU server or auto learning once with SIMPEI_DATABASE_PATH set to this database, "
+            "then complete CPU matches before exporting."
+        )
 
 
 def build_sample(row: sqlite3.Row) -> dict[str, Any] | None:

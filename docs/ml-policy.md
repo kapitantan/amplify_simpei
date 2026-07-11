@@ -10,20 +10,20 @@
 ## コマンド
 
 ```bash
-python -m server.ml.export_dataset \
+python3 -m server.ml.export_dataset \
   --database server/data/simpei_cpu_stacks_cover.sqlite3 \
   --output server/data/ml/policy_value.jsonl
 ```
 
 ```bash
 pip install -r server/requirements-ml.txt
-python -m server.ml.train_policy_value \
+python3 -m server.ml.train_policy_value \
   --dataset server/data/ml/policy_value.jsonl \
   --output server/models/simpei_policy_value.pt
 ```
 
 ```bash
-python -m server.ml.evaluate_policy \
+python3 -m server.ml.evaluate_policy \
   --dataset server/data/ml/policy_value.jsonl \
   --model server/models/simpei_policy_value.pt
 ```

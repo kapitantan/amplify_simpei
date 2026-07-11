@@ -1,6 +1,7 @@
 import importlib
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -524,3 +525,13 @@ def test_exports_completed_cpu_moves_for_ml_training(tmp_path, monkeypatch):
     assert sample["selected_action"] == legal_actions[0]
     assert sample["state_features"]
     assert sample["action_features"]
+
+
+def test_export_dataset_reports_uninitialized_database(tmp_path):
+    from server.ml.export_dataset import export_dataset
+
+    database_path = tmp_path / "empty.sqlite3"
+    database_path.touch()
+
+    with pytest.raises(SystemExit, match="missing table"):
+        export_dataset(database_path, tmp_path / "policy_value.jsonl")
