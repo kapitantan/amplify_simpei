@@ -11,6 +11,7 @@ export const WORLDS = {
 export const ACTION_TYPES = {
   PLACE: "place",
   MOVE: "move",
+  LIGHT_MOVE: "lightMove",
   FORCE_MOVE: "forceMove",
   PASS: "pass",
 };
@@ -21,6 +22,13 @@ const WORLD_SIZES = {
 };
 
 const PIECES_PER_PLAYER = 4;
+
+const PIECE_SETUP = [
+  { suffix: "BIG", size: 3, trait: "heavy" },
+  { suffix: "MID", size: 2, trait: "normal" },
+  { suffix: "SMALL_1", size: 1, trait: "light" },
+  { suffix: "SMALL_2", size: 1, trait: "light" },
+];
 
 const DIRECTIONS = [
   [0, 1],
@@ -54,8 +62,12 @@ export function getPosition(id) {
 }
 
 export function createInitialGame() {
+  const pieces = createPieces();
   return {
     board: Object.fromEntries(POSITIONS.map(({ id }) => [id, null])),
+    pieces,
+    piecePositions: Object.fromEntries(Object.keys(pieces).map((id) => [id, null])),
+    usedSpecialMoves: [],
     currentPlayer: PLAYERS.RED,
     turnNumber: 1,
     placedCount: {
@@ -134,6 +146,36 @@ export function getLegalMoveTargets(state, fromId) {
   return getAdjacentPositions(fromId).filter((toId) => !state.board[toId]);
 }
 
+export function getLegalLightMoveActions(state, fromId) {
+  const piece = getPieceAtPosition(state, fromId);
+  if (
+    state.phase !== "movement"
+    || isTerminal(state)
+    || state.pendingForcedMove
+    || !piece
+    || piece.owner !== state.currentPlayer
+    || piece.trait !== "light"
+    || state.usedSpecialMoves?.includes(piece.id)
+  ) {
+    return [];
+  }
+
+  return getAdjacentPositions(fromId).flatMap((via) => {
+    if (state.board[via]) {
+      return [];
+    }
+    return getAdjacentPositions(via)
+      .filter((to) => to !== fromId && !state.board[to])
+      .map((to) => ({
+        type: ACTION_TYPES.LIGHT_MOVE,
+        from: fromId,
+        via,
+        to,
+        pieceId: piece.id,
+      }));
+  });
+}
+
 export function getMovablePieces(state, player = state.currentPlayer) {
   if (state.phase !== "movement" || isTerminal(state) || state.pendingForcedMove) {
     return [];
@@ -141,13 +183,20 @@ export function getMovablePieces(state, player = state.currentPlayer) {
 
   return POSITIONS.filter(({ id }) => state.board[id] === player)
     .map(({ id }) => id)
-    .filter((id) => getLegalMoveTargets({ ...state, currentPlayer: player }, id).length > 0);
+    .filter((id) => {
+      const playerState = { ...state, currentPlayer: player };
+      return getLegalMoveTargets(playerState, id).length > 0 || getLegalLightMoveActions(playerState, id).length > 0;
+    });
 }
 
 export function getForcedMoveTargets(state) {
   const forcedPiece = state.pendingForcedMove?.pieces[0];
   if (!forcedPiece || isTerminal(state)) {
     return [];
+  }
+
+  if (forcedPiece.trait === "heavy") {
+    return getHeavyForcedMoveTargets(state, forcedPiece.from);
   }
 
   return POSITIONS.filter(({ id }) => id !== forcedPiece.from && !state.board[id]).map(({ id }) => id);
@@ -163,23 +212,30 @@ export function getLegalActions(state) {
     return getForcedMoveTargets(state).map((to) => ({
       type: ACTION_TYPES.FORCE_MOVE,
       from: forcedPiece.from,
+      pieceId: forcedPiece.id,
       to,
     }));
   }
 
   if (state.phase === "placement") {
-    return getLegalPlacementTargets(state).map((to) => ({
-      type: ACTION_TYPES.PLACE,
-      to,
-    }));
+    return getUnplacedPieces(state, state.currentPlayer).flatMap((piece) => (
+      getLegalPlacementTargets(state).map((to) => ({
+        type: ACTION_TYPES.PLACE,
+        pieceId: piece.id,
+        to,
+      }))
+    ));
   }
 
   const moveActions = getMovablePieces(state).flatMap((from) => (
-    getLegalMoveTargets(state, from).map((to) => ({
-      type: ACTION_TYPES.MOVE,
-      from,
-      to,
-    }))
+    [
+      ...getLegalMoveTargets(state, from).map((to) => ({
+        type: ACTION_TYPES.MOVE,
+        from,
+        to,
+      })),
+      ...getLegalLightMoveActions(state, from),
+    ]
   ));
 
   if (moveActions.length > 0) {
@@ -200,9 +256,11 @@ export function applyAction(state, action) {
 
   switch (action.type) {
     case ACTION_TYPES.PLACE:
-      return placePiece(state, action.to);
+      return placePiece(state, action.to, action.pieceId);
     case ACTION_TYPES.MOVE:
       return movePiece(state, action.from, action.to);
+    case ACTION_TYPES.LIGHT_MOVE:
+      return lightMovePiece(state, action.from, action.via, action.to);
     case ACTION_TYPES.FORCE_MOVE:
       return forceMovePiece(state, action.to);
     case ACTION_TYPES.PASS:
@@ -222,6 +280,9 @@ export function getActionKey(action) {
     return "";
   }
 
+  if (action.type === ACTION_TYPES.LIGHT_MOVE) {
+    return [action.type, action.from ?? "", action.via ?? "", action.to ?? ""].join(":");
+  }
   return [action.type, action.from ?? "", action.to ?? ""].join(":");
 }
 
@@ -238,9 +299,13 @@ export function markDraw(state, reason) {
   };
 }
 
-export function placePiece(state, toId) {
+export function placePiece(state, toId, pieceId = null) {
   if (!getLegalPlacementTargets(state).includes(toId)) {
     return withMessage(state, "そこには配置できません。");
+  }
+  const piece = pieceId ? state.pieces[pieceId] : getNextUnplacedPiece(state);
+  if (!piece || piece.owner !== state.currentPlayer || state.piecePositions[piece.id]) {
+    return withMessage(state, "配置するコマがありません。");
   }
 
   const player = state.currentPlayer;
@@ -252,6 +317,10 @@ export function placePiece(state, toId) {
   const nextState = {
     ...state,
     board,
+    piecePositions: {
+      ...state.piecePositions,
+      [piece.id]: toId,
+    },
     placedCount: {
       ...state.placedCount,
       [player]: state.placedCount[player] + 1,
@@ -267,13 +336,46 @@ export function movePiece(state, fromId, toId) {
   }
 
   const player = state.currentPlayer;
+  const piece = getPieceAtPosition(state, fromId);
   const board = {
     ...state.board,
     [fromId]: null,
     [toId]: player,
   };
 
-  return finishTurnAction({ ...state, board }, player, toId);
+  return finishTurnAction({
+    ...state,
+    board,
+    piecePositions: {
+      ...state.piecePositions,
+      [piece.id]: toId,
+    },
+  }, player, toId);
+}
+
+export function lightMovePiece(state, fromId, viaId, toId) {
+  const legalAction = getLegalLightMoveActions(state, fromId)
+    .find((action) => action.via === viaId && action.to === toId);
+  if (!legalAction) {
+    return withMessage(state, "その特殊移動はできません。");
+  }
+
+  const player = state.currentPlayer;
+  const board = {
+    ...state.board,
+    [fromId]: null,
+    [toId]: player,
+  };
+
+  return finishTurnAction({
+    ...state,
+    board,
+    piecePositions: {
+      ...state.piecePositions,
+      [legalAction.pieceId]: toId,
+    },
+    usedSpecialMoves: [...(state.usedSpecialMoves ?? []), legalAction.pieceId],
+  }, player, toId);
 }
 
 export function passTurn(state) {
@@ -303,12 +405,17 @@ export function forceMovePiece(state, toId) {
     [forcedPiece.from]: null,
     [toId]: forcedPiece.player,
   };
+  const piecePositions = forcedPiece.id ? {
+    ...state.piecePositions,
+    [forcedPiece.id]: toId,
+  } : state.piecePositions;
   const remainingPieces = state.pendingForcedMove.pieces.slice(1);
 
   if (remainingPieces.length > 0) {
     return {
       ...state,
       board,
+      piecePositions,
       pendingForcedMove: {
         ...state.pendingForcedMove,
         pieces: remainingPieces,
@@ -321,6 +428,7 @@ export function forceMovePiece(state, toId) {
     {
       ...state,
       board,
+      piecePositions,
       pendingForcedMove: null,
     },
     `${getPlayerLabel(forcedPiece.player)}の駒を飛ばしました。`
@@ -349,7 +457,7 @@ function getExactWinningLineContaining(board, player, world, positionId) {
   return winningLine?.ids ?? null;
 }
 
-export function findSandwichedPieces(board, player, causedById = null) {
+export function findSandwichedPieces(board, player, causedById = null, state = null) {
   const opponent = getOpponent(player);
   const sandwiched = new Set();
 
@@ -372,10 +480,19 @@ export function findSandwichedPieces(board, player, causedById = null) {
     }
   }
 
-  return [...sandwiched].map((from) => ({
-    from,
-    player: opponent,
-  }));
+  return [...sandwiched].map((from) => {
+    const piece = state ? getPieceAtPosition(state, from) : null;
+    const captured = {
+      from,
+      player: opponent,
+    };
+    if (piece) {
+      captured.id = piece.id;
+      captured.size = piece.size;
+      captured.trait = piece.trait;
+    }
+    return captured;
+  });
 }
 
 function findSandwichBoundary(board, opponent, world, row, col, rowDelta, colDelta) {
@@ -410,7 +527,8 @@ function finishTurnAction(state, player, actionPositionId) {
     };
   }
 
-  const sandwichedPieces = findSandwichedPieces(state.board, player, actionPositionId);
+  const sandwichedPieces = findSandwichedPieces(state.board, player, actionPositionId, state)
+    .filter((piece) => piece.trait !== "heavy" || getHeavyForcedMoveTargets(state, piece.from).length > 0);
   if (sandwichedPieces.length > 0) {
     return {
       ...state,
@@ -442,6 +560,51 @@ function switchTurn(state, completedActionMessage = "") {
       `${getPlayerLabel(currentPlayer)}の${turnNumber}手目です。`,
     ].filter(Boolean).join(" "),
   };
+}
+
+function createPieces() {
+  return Object.fromEntries(
+    Object.values(PLAYERS).flatMap((owner) => (
+      PIECE_SETUP.map(({ suffix, size, trait }) => {
+        const id = `${owner}-${suffix}`;
+        return [id, { id, owner, size, trait }];
+      })
+    ))
+  );
+}
+
+function getUnplacedPieces(state, player) {
+  return Object.values(state.pieces ?? createPieces())
+    .filter((piece) => piece.owner === player && !getPiecePosition(state, piece.id));
+}
+
+function getNextUnplacedPiece(state) {
+  return getUnplacedPieces(state, state.currentPlayer)[0] ?? null;
+}
+
+function getPiecePosition(state, pieceId) {
+  if (state.piecePositions) {
+    return state.piecePositions[pieceId] ?? null;
+  }
+
+  return null;
+}
+
+function getPieceAtPosition(state, positionId) {
+  if (state.piecePositions && state.pieces) {
+    const pieceId = Object.entries(state.piecePositions)
+      .find(([, piecePosition]) => piecePosition === positionId)?.[0];
+    if (pieceId) {
+      return state.pieces[pieceId];
+    }
+  }
+
+  const owner = state.board?.[positionId];
+  return owner ? { id: `${owner}-legacy-${positionId}`, owner, size: 2, trait: "normal" } : null;
+}
+
+function getHeavyForcedMoveTargets(state, fromId) {
+  return getAdjacentPositions(fromId).filter((toId) => !state.board[toId]);
 }
 
 function isTerminal(state) {

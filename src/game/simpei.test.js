@@ -12,11 +12,13 @@ import {
   getAdjacentPositions,
   getForcedMoveTargets,
   getLegalActions,
+  getLegalLightMoveActions,
   getLegalPlacementTargets,
   getMovablePieces,
   getPositionId,
   hasExactWinningLine,
   isLegalAction,
+  lightMovePiece,
   markDraw,
   movePiece,
   passTurn,
@@ -175,11 +177,63 @@ describe("simpei rules", () => {
     assert.equal(moved.board[getPositionId(WORLDS.LOWER, 1, 1)], PLAYERS.RED);
   });
 
+  it("limits heavy piece relocation to adjacent empty points", () => {
+    let state = createInitialGame();
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 1), "red-MID");
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 2), "blue-BIG");
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 3), "red-SMALL_1");
+
+    assert.equal(state.pendingForcedMove.pieces[0].trait, "heavy");
+    assert.deepEqual(new Set(getForcedMoveTargets(state)), new Set([
+      getPositionId(WORLDS.LOWER, 0, 1),
+      getPositionId(WORLDS.LOWER, 0, 2),
+      getPositionId(WORLDS.LOWER, 1, 1),
+      getPositionId(WORLDS.LOWER, 1, 2),
+    ]));
+  });
+
+  it("allows each light piece to use a two-step move once", () => {
+    let state = {
+      ...createInitialGame(),
+      currentPlayer: PLAYERS.RED,
+      phase: "movement",
+      turnNumber: 9,
+      placedCount: {
+        [PLAYERS.RED]: 4,
+        [PLAYERS.BLUE]: 4,
+      },
+      board: {
+        ...emptyBoard(),
+        [getPositionId(WORLDS.UPPER, 1, 1)]: PLAYERS.RED,
+      },
+      piecePositions: {
+        ...createInitialGame().piecePositions,
+        "red-SMALL_1": getPositionId(WORLDS.UPPER, 1, 1),
+      },
+    };
+
+    const actions = getLegalLightMoveActions(state, getPositionId(WORLDS.UPPER, 1, 1));
+    const action = actions.find((candidate) => candidate.to === getPositionId(WORLDS.UPPER, 0, 0));
+
+    assert.ok(action);
+
+    state = lightMovePiece(state, action.from, action.via, action.to);
+
+    assert.equal(state.board[getPositionId(WORLDS.UPPER, 0, 0)], PLAYERS.RED);
+    assert.equal(state.usedSpecialMoves.includes("red-SMALL_1"), true);
+    assert.equal(getLegalLightMoveActions({
+      ...state,
+      currentPlayer: PLAYERS.RED,
+    }, getPositionId(WORLDS.UPPER, 0, 0)).length, 0);
+  });
+
   it("lists move actions or pass actions in movement phase", () => {
     const state = fillPlacementWithoutWinner();
     const moveActions = getLegalActions(state);
 
-    assert.equal(moveActions.every((action) => action.type === ACTION_TYPES.MOVE), true);
+    assert.equal(moveActions.every((action) => (
+      action.type === ACTION_TYPES.MOVE || action.type === ACTION_TYPES.LIGHT_MOVE
+    )), true);
     assert.equal(moveActions.some((action) => action.from === getPositionId(WORLDS.UPPER, 1, 1)), true);
 
     const blockedState = {
@@ -306,7 +360,7 @@ describe("simpei rules", () => {
     assert.equal(getForcedMoveTargets(state).includes(getPositionId(WORLDS.LOWER, 1, 1)), false);
     assert.equal(getLegalActions(state).every((action) => action.type === ACTION_TYPES.FORCE_MOVE), true);
 
-    state = forceMovePiece(state, getPositionId(WORLDS.LOWER, 0, 0));
+    state = forceMovePiece(state, getForcedMoveTargets(state)[0]);
     assert.equal(state.winner, null);
     assert.equal(state.pendingForcedMove, null);
     assert.equal(state.currentPlayer, PLAYERS.BLUE);
@@ -341,10 +395,16 @@ describe("simpei rules", () => {
       {
         from: getPositionId(WORLDS.UPPER, 1, 1),
         player: PLAYERS.BLUE,
+        id: "blue-legacy-upper-1-1",
+        size: 2,
+        trait: "normal",
       },
       {
         from: getPositionId(WORLDS.UPPER, 1, 2),
         player: PLAYERS.BLUE,
+        id: "blue-legacy-upper-1-2",
+        size: 2,
+        trait: "normal",
       },
     ]);
 
