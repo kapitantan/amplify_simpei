@@ -47,5 +47,6 @@ npm run lint
 npm run build
 ```
 
-`npm run build` requires the local Amplify output file `amplify_outputs.json`.
-If it is missing, generate or copy that file before building.
+`npm run build` does not require a local `amplify_outputs.json`.
+To enable the sample `/notes` Amplify screen locally, provide the generated
+Amplify outputs JSON through `VITE_AMPLIFY_OUTPUTS_JSON`.

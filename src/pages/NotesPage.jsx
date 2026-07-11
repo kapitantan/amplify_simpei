@@ -83,6 +83,11 @@ export default function NotesPage() {
   async function createNote(event) {
     event.preventDefault();
 
+    if (!noteModel) {
+      setError("利用できるデータモデルがありません。");
+      return;
+    }
+
     const form = new FormData(event.target);
     const image = form.get("image");
     const imageName = image?.name || "";
@@ -107,6 +112,11 @@ export default function NotesPage() {
   }
 
   async function deleteNote({ id }) {
+    if (!noteModel) {
+      setError("利用できるデータモデルがありません。");
+      return;
+    }
+
     await noteModel.delete({ id });
     fetchNotes();
   }
