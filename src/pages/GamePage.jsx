@@ -9,6 +9,7 @@ import {
   getForcedMoveTargets,
   getLegalActions,
   getLegalMoveTargets,
+  getLegalObstacleTargets,
   getLegalPlacementTargets,
   getMovablePieces,
   getPlayerLabel,
@@ -33,6 +34,7 @@ const MAX_MATCH_HISTORY_LENGTH = 180;
 export default function GamePage() {
   const [game, setGame] = useState(() => createInitialGame());
   const [selectedPiece, setSelectedPiece] = useState(null);
+  const [placingObstacle, setPlacingObstacle] = useState(false);
   const [cpuMode, setCpuMode] = useState(false);
   const [autoLearnMode, setAutoLearnMode] = useState(false);
   const [cpuThinking, setCpuThinking] = useState(false);
@@ -74,6 +76,7 @@ export default function GamePage() {
   const legalMoveTargets = useMemo(() => (
     selectedPiece ? new Set(getLegalMoveTargets(game, selectedPiece)) : new Set()
   ), [game, selectedPiece]);
+  const legalObstacleTargets = useMemo(() => new Set(getLegalObstacleTargets(game)), [game]);
   const forcedPiece = game.pendingForcedMove?.pieces[0] ?? null;
   const isCpuTurnInView = cpuMode && !isTerminalGame(game) && (autoLearnMode || game.currentPlayer === CPU_PLAYER);
 
@@ -171,6 +174,7 @@ export default function GamePage() {
     setCurrentGame(nextGame);
     if (nextGame.pendingForcedMove || isTerminalGame(nextGame) || nextGame.phase !== "movement") {
       setSelectedPiece(null);
+      setPlacingObstacle(false);
     } else if (selectedPiece && nextGame.board[selectedPiece] !== nextGame.currentPlayer) {
       setSelectedPiece(null);
     }
@@ -356,6 +360,17 @@ export default function GamePage() {
       return;
     }
 
+    if (placingObstacle) {
+      if (!legalObstacleTargets.has(positionId)) {
+        showInvalidTarget(positionId);
+        return;
+      }
+      const result = commitAction({ type: ACTION_TYPES.PLACE_OBSTACLE, to: positionId });
+      setPlacingObstacle(false);
+      playEffect({ type: "blocked", id: positionId }, result?.nextGame.pendingForcedMove ? 380 : 240);
+      return;
+    }
+
     if (game.pendingForcedMove) {
       if (!forcedMoveTargets.has(positionId)) {
         showInvalidTarget(positionId);
@@ -387,6 +402,7 @@ export default function GamePage() {
       }
 
       setSelectedPiece(positionId);
+      setPlacingObstacle(false);
       setUiEffect((current) => ({
         ...current,
         selectedCell: positionId,
@@ -419,6 +435,7 @@ export default function GamePage() {
     setCurrentGame(nextGame);
     resetStateVisits(nextGame);
     setSelectedPiece(null);
+    setPlacingObstacle(false);
     setMoveHistory([]);
     historyRef.current = [];
     resultRecordedRef.current = false;
@@ -437,6 +454,11 @@ export default function GamePage() {
 
   function handlePass() {
     commitAction({ type: ACTION_TYPES.PASS });
+  }
+
+  function handleObstacleMode() {
+    setSelectedPiece(null);
+    setPlacingObstacle((current) => !current);
   }
 
   async function handleCpuModeChange(event) {
@@ -596,6 +618,7 @@ export default function GamePage() {
           selectedPiece={selectedPiece}
           legalPlacementTargets={legalPlacementTargets}
           legalMoveTargets={legalMoveTargets}
+          legalObstacleTargets={placingObstacle ? legalObstacleTargets : new Set()}
           forcedMoveTargets={forcedMoveTargets}
           forcedPieceId={forcedPiece?.from}
           flyingPiece={flyingPiece}
@@ -613,6 +636,13 @@ export default function GamePage() {
           disabled={game.phase !== "movement" || isTerminalGame(game) || game.pendingForcedMove || movablePieces.size > 0 || isCpuTurnInView}
         >
           パス
+        </button>
+        <button
+          type="button"
+          onClick={handleObstacleMode}
+          disabled={game.phase !== "movement" || isTerminalGame(game) || game.pendingForcedMove || game.obstacleUsed?.[game.currentPlayer] || isCpuTurnInView}
+        >
+          {placingObstacle ? "障害物解除" : "障害物"}
         </button>
         <label className="cpu-toggle">
           <input
@@ -673,6 +703,7 @@ function IntegratedBoard({
   selectedPiece,
   legalPlacementTargets,
   legalMoveTargets,
+  legalObstacleTargets,
   forcedMoveTargets,
   forcedPieceId,
   flyingPiece,
@@ -706,10 +737,12 @@ function IntegratedBoard({
         ))}
         {POSITIONS.map(({ id, world, row, col }) => {
           const occupant = game.board[id];
+          const hasObstacle = game.obstacles?.includes(id);
           const isSelected = selectedPiece === id;
           const isForcedPiece = forcedPieceId === id;
           const isLegalTarget = legalPlacementTargets.has(id)
             || legalMoveTargets.has(id)
+            || legalObstacleTargets.has(id)
             || forcedMoveTargets.has(id);
           const isMovable = movablePieces.has(id);
           const isInvalid = uiEffect.invalidTarget === id;
@@ -726,6 +759,7 @@ function IntegratedBoard({
               className={[
                 "board-point",
                 occupant ? `occupied ${occupant}` : "",
+                hasObstacle ? "obstacle" : "",
                 isSelected ? "selected" : "",
                 isForcedPiece ? "forced" : "",
                 isLegalTarget ? "legal-target" : "",
@@ -748,10 +782,11 @@ function IntegratedBoard({
                   pointRefs.current.delete(id);
                 }
               }}
-              aria-label={occupant ? `${label}: ${getPlayerLabel(occupant)}の駒` : `${label}: 空き`}
+              aria-label={getPointAriaLabel(label, occupant, hasObstacle)}
             >
               <span className="point-hole" />
-              {isLegalTarget && !occupant && <span className="target-marker" />}
+              {isLegalTarget && !occupant && !hasObstacle && <span className="target-marker" />}
+              {hasObstacle && <span className="obstacle-token">障</span>}
               {occupant && flyingPiece?.from !== id && (
                 <span className="piece">
                   <span className="piece-head">{getPlayerLabel(occupant)}</span>
@@ -783,6 +818,13 @@ function IntegratedBoard({
       </div>
     </section>
   );
+}
+
+function getPointAriaLabel(label, occupant, hasObstacle) {
+  if (hasObstacle) {
+    return `${label}: 障害物`;
+  }
+  return occupant ? `${label}: ${getPlayerLabel(occupant)}の駒` : `${label}: 空き`;
 }
 
 function BoardLegend() {

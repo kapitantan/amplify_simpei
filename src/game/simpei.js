@@ -12,6 +12,7 @@ export const ACTION_TYPES = {
   PLACE: "place",
   MOVE: "move",
   FORCE_MOVE: "forceMove",
+  PLACE_OBSTACLE: "placeObstacle",
   PASS: "pass",
 };
 
@@ -62,6 +63,11 @@ export function createInitialGame() {
       [PLAYERS.RED]: 0,
       [PLAYERS.BLUE]: 0,
     },
+    obstacles: [],
+    obstacleUsed: {
+      [PLAYERS.RED]: false,
+      [PLAYERS.BLUE]: false,
+    },
     phase: "placement",
     pendingForcedMove: null,
     winner: null,
@@ -85,7 +91,7 @@ export function getLegalPlacementTargets(state) {
   }
 
   return POSITIONS.filter(({ id, world, row, col }) => {
-    if (state.board[id]) {
+    if (state.board[id] || state.obstacles?.includes(id)) {
       return false;
     }
 
@@ -131,7 +137,7 @@ export function getLegalMoveTargets(state, fromId) {
     return [];
   }
 
-  return getAdjacentPositions(fromId).filter((toId) => !state.board[toId]);
+  return getAdjacentPositions(fromId).filter((toId) => !state.board[toId] && !state.obstacles?.includes(toId));
 }
 
 export function getMovablePieces(state, player = state.currentPlayer) {
@@ -150,7 +156,19 @@ export function getForcedMoveTargets(state) {
     return [];
   }
 
-  return POSITIONS.filter(({ id }) => id !== forcedPiece.from && !state.board[id]).map(({ id }) => id);
+  return POSITIONS
+    .filter(({ id }) => id !== forcedPiece.from && !state.board[id] && !state.obstacles?.includes(id))
+    .map(({ id }) => id);
+}
+
+export function getLegalObstacleTargets(state) {
+  if (state.phase !== "movement" || isTerminal(state) || state.pendingForcedMove || state.obstacleUsed?.[state.currentPlayer]) {
+    return [];
+  }
+
+  return POSITIONS
+    .filter(({ id }) => !state.board[id] && !state.obstacles?.includes(id))
+    .map(({ id }) => id);
 }
 
 export function getLegalActions(state) {
@@ -181,9 +199,13 @@ export function getLegalActions(state) {
       to,
     }))
   ));
+  const obstacleActions = getLegalObstacleTargets(state).map((to) => ({
+    type: ACTION_TYPES.PLACE_OBSTACLE,
+    to,
+  }));
 
-  if (moveActions.length > 0) {
-    return moveActions;
+  if (moveActions.length > 0 || obstacleActions.length > 0) {
+    return [...moveActions, ...obstacleActions];
   }
 
   return [{ type: ACTION_TYPES.PASS }];
@@ -205,6 +227,8 @@ export function applyAction(state, action) {
       return movePiece(state, action.from, action.to);
     case ACTION_TYPES.FORCE_MOVE:
       return forceMovePiece(state, action.to);
+    case ACTION_TYPES.PLACE_OBSTACLE:
+      return placeObstacle(state, action.to);
     case ACTION_TYPES.PASS:
       return passTurn(state);
     default:
@@ -286,6 +310,25 @@ export function passTurn(state) {
   }
 
   return switchTurn(state, `${getPlayerLabel(state.currentPlayer)}は移動できないためパスしました。`);
+}
+
+export function placeObstacle(state, toId) {
+  if (!getLegalObstacleTargets(state).includes(toId)) {
+    return withMessage(state, "そこには障害物を置けません。");
+  }
+
+  const player = state.currentPlayer;
+  return switchTurn(
+    {
+      ...state,
+      obstacles: [...(state.obstacles ?? []), toId],
+      obstacleUsed: {
+        ...state.obstacleUsed,
+        [player]: true,
+      },
+    },
+    `${getPlayerLabel(player)}が障害物を置きました。`
+  );
 }
 
 export function forceMovePiece(state, toId) {

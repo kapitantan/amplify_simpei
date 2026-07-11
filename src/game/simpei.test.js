@@ -12,6 +12,7 @@ import {
   getAdjacentPositions,
   getForcedMoveTargets,
   getLegalActions,
+  getLegalObstacleTargets,
   getLegalPlacementTargets,
   getMovablePieces,
   getPositionId,
@@ -20,6 +21,7 @@ import {
   markDraw,
   movePiece,
   passTurn,
+  placeObstacle,
   placePiece,
 } from "./simpei.js";
 
@@ -179,11 +181,16 @@ describe("simpei rules", () => {
     const state = fillPlacementWithoutWinner();
     const moveActions = getLegalActions(state);
 
-    assert.equal(moveActions.every((action) => action.type === ACTION_TYPES.MOVE), true);
+    assert.equal(moveActions.some((action) => action.type === ACTION_TYPES.MOVE), true);
+    assert.equal(moveActions.some((action) => action.type === ACTION_TYPES.PLACE_OBSTACLE), true);
     assert.equal(moveActions.some((action) => action.from === getPositionId(WORLDS.UPPER, 1, 1)), true);
 
     const blockedState = {
       ...state,
+      obstacleUsed: {
+        [PLAYERS.RED]: true,
+        [PLAYERS.BLUE]: false,
+      },
       board: {
         ...state.board,
         [getPositionId(WORLDS.UPPER, 0, 1)]: PLAYERS.BLUE,
@@ -198,6 +205,27 @@ describe("simpei rules", () => {
     };
 
     assert.deepEqual(getLegalActions(blockedState), [{ type: ACTION_TYPES.PASS }]);
+  });
+
+  it("places one obstacle per player during movement", () => {
+    const state = fillPlacementWithoutWinner();
+    const target = getPositionId(WORLDS.LOWER, 1, 1);
+
+    assert.equal(getLegalObstacleTargets(state).includes(target), true);
+
+    const blocked = placeObstacle(state, target);
+
+    assert.equal(blocked.obstacles.includes(target), true);
+    assert.equal(blocked.obstacleUsed[PLAYERS.RED], true);
+    assert.equal(blocked.currentPlayer, PLAYERS.BLUE);
+    assert.equal(getLegalPlacementTargets({ ...blocked, phase: "placement" }).includes(target), false);
+    assert.equal(getForcedMoveTargets({
+      ...blocked,
+      pendingForcedMove: {
+        player: PLAYERS.BLUE,
+        pieces: [{ from: getPositionId(WORLDS.UPPER, 0, 0), player: PLAYERS.RED }],
+      },
+    }).includes(target), false);
   });
 
   it("uses the overlaid board adjacency between upper corners, edges, centers, and lower points", () => {

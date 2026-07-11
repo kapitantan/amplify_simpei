@@ -255,6 +255,28 @@
   animation: target-pop 160ms ease-out;
 }
 
+.obstacle-token {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 58%;
+  aspect-ratio: 1;
+  border: 2px solid #44403c;
+  border-radius: 4px;
+  background: linear-gradient(145deg, #78716c, #292524);
+  color: #fafaf9;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 8px 16px rgba(28, 25, 23, 0.32);
+}
+
+.board-point.obstacle .point-hole {
+  border-color: #44403c;
+  background: #d6d3d1;
+}
+
 .piece {
   position: relative;
   z-index: 2;
