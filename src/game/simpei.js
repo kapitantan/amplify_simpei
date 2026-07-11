@@ -22,6 +22,13 @@ const WORLD_SIZES = {
 
 const PIECES_PER_PLAYER = 4;
 
+const PIECE_SETUP = [
+  { suffix: "BIG", size: 3 },
+  { suffix: "MID", size: 2 },
+  { suffix: "SMALL_1", size: 1 },
+  { suffix: "SMALL_2", size: 1 },
+];
+
 const DIRECTIONS = [
   [0, 1],
   [1, 0],
@@ -54,8 +61,11 @@ export function getPosition(id) {
 }
 
 export function createInitialGame() {
+  const pieces = createPieces();
   return {
     board: Object.fromEntries(POSITIONS.map(({ id }) => [id, null])),
+    stacks: Object.fromEntries(POSITIONS.map(({ id }) => [id, []])),
+    pieces,
     currentPlayer: PLAYERS.RED,
     turnNumber: 1,
     placedCount: {
@@ -85,15 +95,11 @@ export function getLegalPlacementTargets(state) {
   }
 
   return POSITIONS.filter(({ id, world, row, col }) => {
-    if (state.board[id]) {
-      return false;
-    }
-
     if (state.turnNumber !== 1) {
-      return true;
+      return canPlacePiece(state, getNextUnplacedPiece(state), id);
     }
 
-    return world === WORLDS.UPPER && row >= 1 && row <= 2 && col >= 1 && col <= 2;
+    return !state.board[id] && world === WORLDS.UPPER && row >= 1 && row <= 2 && col >= 1 && col <= 2;
   }).map(({ id }) => id);
 }
 
@@ -127,11 +133,12 @@ export function getLegalMoveTargets(state, fromId) {
     return [];
   }
 
-  if (state.board[fromId] !== state.currentPlayer) {
+  const movingPiece = getTopPiece(state, fromId);
+  if (!movingPiece || movingPiece.owner !== state.currentPlayer) {
     return [];
   }
 
-  return getAdjacentPositions(fromId).filter((toId) => !state.board[toId]);
+  return getAdjacentPositions(fromId).filter((toId) => canEnterCell(state, movingPiece, toId));
 }
 
 export function getMovablePieces(state, player = state.currentPlayer) {
@@ -139,7 +146,7 @@ export function getMovablePieces(state, player = state.currentPlayer) {
     return [];
   }
 
-  return POSITIONS.filter(({ id }) => state.board[id] === player)
+  return POSITIONS.filter(({ id }) => getTopPiece(state, id)?.owner === player)
     .map(({ id }) => id)
     .filter((id) => getLegalMoveTargets({ ...state, currentPlayer: player }, id).length > 0);
 }
@@ -163,15 +170,19 @@ export function getLegalActions(state) {
     return getForcedMoveTargets(state).map((to) => ({
       type: ACTION_TYPES.FORCE_MOVE,
       from: forcedPiece.from,
+      pieceId: forcedPiece.id,
       to,
     }));
   }
 
   if (state.phase === "placement") {
-    return getLegalPlacementTargets(state).map((to) => ({
-      type: ACTION_TYPES.PLACE,
-      to,
-    }));
+    return getUnplacedPieces(state, state.currentPlayer).flatMap((piece) => (
+      getLegalPlacementTargetsForPiece(state, piece).map((to) => ({
+        type: ACTION_TYPES.PLACE,
+        pieceId: piece.id,
+        to,
+      }))
+    ));
   }
 
   const moveActions = getMovablePieces(state).flatMap((from) => (
@@ -200,7 +211,7 @@ export function applyAction(state, action) {
 
   switch (action.type) {
     case ACTION_TYPES.PLACE:
-      return placePiece(state, action.to);
+      return placePiece(state, action.to, action.pieceId);
     case ACTION_TYPES.MOVE:
       return movePiece(state, action.from, action.to);
     case ACTION_TYPES.FORCE_MOVE:
@@ -238,20 +249,19 @@ export function markDraw(state, reason) {
   };
 }
 
-export function placePiece(state, toId) {
-  if (!getLegalPlacementTargets(state).includes(toId)) {
+export function placePiece(state, toId, pieceId = null) {
+  const piece = pieceId ? state.pieces[pieceId] : getNextUnplacedPiece(state);
+  if (!piece || !getLegalPlacementTargetsForPiece(state, piece).includes(toId)) {
     return withMessage(state, "そこには配置できません。");
   }
 
   const player = state.currentPlayer;
-  const board = {
-    ...state.board,
-    [toId]: player,
-  };
+  const stacks = pushPiece(getStacks(state), toId, piece);
 
   const nextState = {
     ...state,
-    board,
+    board: getBoardFromStacks(stacks),
+    stacks,
     placedCount: {
       ...state.placedCount,
       [player]: state.placedCount[player] + 1,
@@ -267,13 +277,10 @@ export function movePiece(state, fromId, toId) {
   }
 
   const player = state.currentPlayer;
-  const board = {
-    ...state.board,
-    [fromId]: null,
-    [toId]: player,
-  };
+  const movingPiece = getTopPiece(state, fromId);
+  const stacks = moveTopPiece(getStacks(state), fromId, toId);
 
-  return finishTurnAction({ ...state, board }, player, toId);
+  return finishTurnAction({ ...state, board: getBoardFromStacks(stacks), stacks }, player, toId, movingPiece);
 }
 
 export function passTurn(state) {
@@ -298,17 +305,15 @@ export function forceMovePiece(state, toId) {
     return withMessage(state, "その場所には飛ばせません。");
   }
 
-  const board = {
-    ...state.board,
-    [forcedPiece.from]: null,
-    [toId]: forcedPiece.player,
-  };
+  const stacks = moveTopPiece(getStacks(state), forcedPiece.from, toId);
+  const nextBoard = getBoardFromStacks(stacks);
   const remainingPieces = state.pendingForcedMove.pieces.slice(1);
 
   if (remainingPieces.length > 0) {
     return {
       ...state,
-      board,
+      board: nextBoard,
+      stacks,
       pendingForcedMove: {
         ...state.pendingForcedMove,
         pieces: remainingPieces,
@@ -320,7 +325,8 @@ export function forceMovePiece(state, toId) {
   return switchTurn(
     {
       ...state,
-      board,
+      board: nextBoard,
+      stacks,
       pendingForcedMove: null,
     },
     `${getPlayerLabel(forcedPiece.player)}の駒を飛ばしました。`
@@ -349,7 +355,7 @@ function getExactWinningLineContaining(board, player, world, positionId) {
   return winningLine?.ids ?? null;
 }
 
-export function findSandwichedPieces(board, player, causedById = null) {
+export function findSandwichedPieces(board, player, causedById = null, stacks = null) {
   const opponent = getOpponent(player);
   const sandwiched = new Set();
 
@@ -372,10 +378,18 @@ export function findSandwichedPieces(board, player, causedById = null) {
     }
   }
 
-  return [...sandwiched].map((from) => ({
-    from,
-    player: opponent,
-  }));
+  return [...sandwiched].map((from) => {
+    const piece = stacks ? getTopPiece({ stacks }, from) : null;
+    const captured = {
+      from,
+      player: opponent,
+    };
+    if (piece) {
+      captured.id = piece.id;
+      captured.size = piece.size;
+    }
+    return captured;
+  });
 }
 
 function findSandwichBoundary(board, opponent, world, row, col, rowDelta, colDelta) {
@@ -410,7 +424,7 @@ function finishTurnAction(state, player, actionPositionId) {
     };
   }
 
-  const sandwichedPieces = findSandwichedPieces(state.board, player, actionPositionId);
+  const sandwichedPieces = findSandwichedPieces(state.board, player, actionPositionId, state.stacks);
   if (sandwichedPieces.length > 0) {
     return {
       ...state,
@@ -442,6 +456,97 @@ function switchTurn(state, completedActionMessage = "") {
       `${getPlayerLabel(currentPlayer)}の${turnNumber}手目です。`,
     ].filter(Boolean).join(" "),
   };
+}
+
+function createPieces() {
+  return Object.fromEntries(
+    Object.values(PLAYERS).flatMap((owner) => (
+      PIECE_SETUP.map(({ suffix, size }) => {
+        const id = `${owner}-${suffix}`;
+        return [id, { id, owner, size }];
+      })
+    ))
+  );
+}
+
+function getUnplacedPieces(state, player) {
+  const placedIds = new Set(Object.values(getStacks(state)).flatMap((stack) => stack.map((piece) => piece.id)));
+  return Object.values(state.pieces ?? createPieces())
+    .filter((piece) => piece.owner === player && !placedIds.has(piece.id));
+}
+
+function getNextUnplacedPiece(state) {
+  return getUnplacedPieces(state, state.currentPlayer)[0] ?? null;
+}
+
+function getLegalPlacementTargetsForPiece(state, piece) {
+  if (!piece || state.phase !== "placement" || isTerminal(state) || state.pendingForcedMove) {
+    return [];
+  }
+
+  return POSITIONS.filter(({ id, world, row, col }) => {
+    if (state.turnNumber === 1) {
+      return !state.board[id] && world === WORLDS.UPPER && row >= 1 && row <= 2 && col >= 1 && col <= 2;
+    }
+    return canPlacePiece(state, piece, id);
+  }).map(({ id }) => id);
+}
+
+function canPlacePiece(state, piece, toId) {
+  return canEnterCell(state, piece, toId);
+}
+
+function canEnterCell(state, movingPiece, toId) {
+  const topPiece = getTopPiece(state, toId);
+  return !topPiece || movingPiece.size > topPiece.size;
+}
+
+function getTopPiece(state, positionId) {
+  const stack = getStacks(state)[positionId] ?? [];
+  return stack[stack.length - 1] ?? null;
+}
+
+function getStacks(state) {
+  if (state.stacks) {
+    return Object.fromEntries(POSITIONS.map(({ id }) => {
+      const stack = state.stacks[id] ?? [];
+      const owner = state.board?.[id];
+      return [id, stack.length > 0 || !owner ? stack : [{ id: `${owner}-legacy-${id}`, owner, size: 1 }]];
+    }));
+  }
+
+  return Object.fromEntries(POSITIONS.map(({ id }) => {
+    const owner = state.board?.[id];
+    return [id, owner ? [{ id: `${owner}-legacy-${id}`, owner, size: 1 }] : []];
+  }));
+}
+
+function pushPiece(stacks, toId, piece) {
+  return {
+    ...stacks,
+    [toId]: [...(stacks[toId] ?? []), piece],
+  };
+}
+
+function moveTopPiece(stacks, fromId, toId) {
+  const fromStack = stacks[fromId] ?? [];
+  const movingPiece = fromStack[fromStack.length - 1];
+  if (!movingPiece) {
+    return stacks;
+  }
+
+  return {
+    ...stacks,
+    [fromId]: fromStack.slice(0, -1),
+    [toId]: [...(stacks[toId] ?? []), movingPiece],
+  };
+}
+
+function getBoardFromStacks(stacks) {
+  return Object.fromEntries(POSITIONS.map(({ id }) => {
+    const stack = stacks[id] ?? [];
+    return [id, stack[stack.length - 1]?.owner ?? null];
+  }));
 }
 
 function isTerminal(state) {

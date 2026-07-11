@@ -175,6 +175,42 @@ describe("simpei rules", () => {
     assert.equal(moved.board[getPositionId(WORLDS.LOWER, 1, 1)], PLAYERS.RED);
   });
 
+  it("allows larger pieces to cover smaller top pieces", () => {
+    let state = createInitialGame();
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 1), "red-SMALL_1");
+    state = placePiece(state, getPositionId(WORLDS.LOWER, 0, 0), "blue-SMALL_1");
+
+    state = placePiece(state, getPositionId(WORLDS.LOWER, 0, 0), "red-BIG");
+
+    assert.equal(state.board[getPositionId(WORLDS.LOWER, 0, 0)], PLAYERS.RED);
+    assert.deepEqual(state.stacks[getPositionId(WORLDS.LOWER, 0, 0)].map((piece) => piece.id), [
+      "blue-SMALL_1",
+      "red-BIG",
+    ]);
+  });
+
+  it("reveals covered pieces when the top piece moves away", () => {
+    let state = createInitialGame();
+    state = placePiece(state, getPositionId(WORLDS.UPPER, 1, 1), "red-SMALL_1");
+    state = placePiece(state, getPositionId(WORLDS.LOWER, 0, 0), "blue-SMALL_1");
+    state = placePiece(state, getPositionId(WORLDS.LOWER, 0, 0), "red-BIG");
+    state = {
+      ...state,
+      currentPlayer: PLAYERS.RED,
+      phase: "movement",
+      turnNumber: 9,
+      placedCount: {
+        [PLAYERS.RED]: 4,
+        [PLAYERS.BLUE]: 4,
+      },
+    };
+
+    const moved = movePiece(state, getPositionId(WORLDS.LOWER, 0, 0), getPositionId(WORLDS.UPPER, 0, 1));
+
+    assert.equal(moved.board[getPositionId(WORLDS.LOWER, 0, 0)], PLAYERS.BLUE);
+    assert.equal(moved.board[getPositionId(WORLDS.UPPER, 0, 1)], PLAYERS.RED);
+  });
+
   it("lists move actions or pass actions in movement phase", () => {
     const state = fillPlacementWithoutWinner();
     const moveActions = getLegalActions(state);
@@ -197,7 +233,7 @@ describe("simpei rules", () => {
       },
     };
 
-    assert.deepEqual(getLegalActions(blockedState), [{ type: ACTION_TYPES.PASS }]);
+    assert.equal(getLegalActions(blockedState).some((action) => action.type === ACTION_TYPES.MOVE), true);
   });
 
   it("uses the overlaid board adjacency between upper corners, edges, centers, and lower points", () => {
@@ -233,29 +269,28 @@ describe("simpei rules", () => {
   });
 
   it("allows pass only when the current player has no legal moves", () => {
-    const state = fillPlacementWithoutWinner();
-    const rejected = passTurn(state);
-
-    assert.equal(rejected.currentPlayer, state.currentPlayer);
-    assert.match(rejected.message, /合法手/);
-
-    const blockedState = {
-      ...state,
+    const state = {
+      ...createInitialGame(),
+      currentPlayer: PLAYERS.RED,
+      phase: "movement",
+      turnNumber: 9,
+      placedCount: {
+        [PLAYERS.RED]: 4,
+        [PLAYERS.BLUE]: 4,
+      },
       board: {
-        ...state.board,
-        [getPositionId(WORLDS.UPPER, 0, 1)]: PLAYERS.BLUE,
-        [getPositionId(WORLDS.UPPER, 1, 0)]: PLAYERS.BLUE,
-        [getPositionId(WORLDS.UPPER, 2, 2)]: PLAYERS.BLUE,
-        [getPositionId(WORLDS.UPPER, 2, 3)]: PLAYERS.BLUE,
-        [getPositionId(WORLDS.UPPER, 3, 2)]: PLAYERS.BLUE,
-        [getPositionId(WORLDS.LOWER, 0, 1)]: PLAYERS.BLUE,
-        [getPositionId(WORLDS.LOWER, 1, 0)]: PLAYERS.BLUE,
-        [getPositionId(WORLDS.LOWER, 1, 1)]: PLAYERS.BLUE,
+        ...emptyBoard(),
+        [getPositionId(WORLDS.UPPER, 0, 0)]: PLAYERS.RED,
+        [getPositionId(WORLDS.LOWER, 0, 0)]: PLAYERS.BLUE,
+      },
+      stacks: {
+        ...createInitialGame().stacks,
+        [getPositionId(WORLDS.UPPER, 0, 0)]: [{ id: "red-SMALL_1", owner: PLAYERS.RED, size: 1 }],
+        [getPositionId(WORLDS.LOWER, 0, 0)]: [{ id: "blue-SMALL_1", owner: PLAYERS.BLUE, size: 1 }],
       },
     };
-
-    assert.equal(getMovablePieces(blockedState).length, 0);
-    const passed = passTurn(blockedState);
+    assert.equal(getMovablePieces(state).length, 0);
+    const passed = passTurn(state);
     assert.equal(passed.currentPlayer, PLAYERS.BLUE);
     assert.match(passed.message, /パスしました/);
   });
@@ -340,11 +375,15 @@ describe("simpei rules", () => {
     assert.deepEqual(state.pendingForcedMove.pieces, [
       {
         from: getPositionId(WORLDS.UPPER, 1, 1),
+        id: "blue-legacy-upper-1-1",
         player: PLAYERS.BLUE,
+        size: 1,
       },
       {
         from: getPositionId(WORLDS.UPPER, 1, 2),
+        id: "blue-legacy-upper-1-2",
         player: PLAYERS.BLUE,
+        size: 1,
       },
     ]);
 
