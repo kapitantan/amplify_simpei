@@ -11,15 +11,16 @@
 
 ```bash
 python3 -m server.ml.export_dataset \
-  --database server/data/simpei_cpu_stacks_cover.sqlite3 \
+  --database server/data/simpei_cpu.sqlite3 \
   --output server/data/ml/policy_value.jsonl
 ```
 
 ```bash
-pip install -r server/requirements-ml.txt
+python3 -m pip install -r server/requirements-ml.txt
 python3 -m server.ml.train_policy_value \
   --dataset server/data/ml/policy_value.jsonl \
-  --output server/models/simpei_policy_value.pt
+  --output server/models/simpei_policy_value.pt \
+  --device auto
 ```
 
 ```bash
@@ -27,6 +28,8 @@ python3 -m server.ml.evaluate_policy \
   --dataset server/data/ml/policy_value.jsonl \
   --model server/models/simpei_policy_value.pt
 ```
+
+`--device auto` は CUDA が使える場合は CUDA、macOS の MPS が使える場合は MPS、それ以外は CPU を使う。GPU を必ず使いたい場合は `--device cuda` を指定する。
 
 ```bash
 SIMPEI_CPU_POLICY=hybrid \
