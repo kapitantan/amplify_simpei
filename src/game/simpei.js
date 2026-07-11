@@ -231,7 +231,11 @@ export function getActionKey(action) {
     return "";
   }
 
-  return [action.type, action.pieceId ?? "", action.from ?? "", action.to ?? ""].join(":");
+  if (action.type === ACTION_TYPES.PLACE) {
+    return [action.type, action.pieceId ?? "", action.from ?? "", action.to ?? ""].join(":");
+  }
+
+  return [action.type, action.from ?? "", action.to ?? ""].join(":");
 }
 
 export function markDraw(state, reason) {

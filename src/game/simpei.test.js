@@ -397,6 +397,14 @@ describe("simpei rules", () => {
     assert.equal(state.pendingForcedMove.pieces[0].from, getPositionId(WORLDS.LOWER, 1, 1));
     assert.equal(getForcedMoveTargets(state).includes(getPositionId(WORLDS.LOWER, 1, 1)), false);
     assert.equal(getLegalActions(state).every((action) => action.type === ACTION_TYPES.FORCE_MOVE), true);
+    assert.equal(
+      isLegalAction(state, {
+        type: ACTION_TYPES.FORCE_MOVE,
+        from: getPositionId(WORLDS.LOWER, 1, 1),
+        to: getPositionId(WORLDS.LOWER, 0, 0),
+      }),
+      true
+    );
 
     state = forceMovePiece(state, getPositionId(WORLDS.LOWER, 0, 0));
     assert.equal(state.winner, null);

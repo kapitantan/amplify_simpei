@@ -378,7 +378,12 @@ export default function GamePage() {
       }
 
       playForcedMoveAnimation(forcedPiece, positionId, () => {
-        commitAction({ type: ACTION_TYPES.FORCE_MOVE, from: forcedPiece.from, to: positionId });
+        commitAction({
+          type: ACTION_TYPES.FORCE_MOVE,
+          from: forcedPiece.from,
+          pieceId: forcedPiece.id,
+          to: positionId,
+        });
       });
       return;
     }
