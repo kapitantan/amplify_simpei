@@ -2,21 +2,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from server.app.ml_policy import ACTION_FEATURE_SIZE, STATE_FEATURE_SIZE, create_policy_value_net
+
+DEFAULT_OUTPUT = "server/models/simpei_policy_value.pt"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a Simpei policy/value network from exported JSONL.")
     parser.add_argument("--dataset", default="server/data/ml/policy_value.jsonl")
-    parser.add_argument("--output", default="server/models/simpei_policy_value.pt")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Model output path template. A timestamp and UUID are appended before the suffix. "
+            "If omitted, writes a timestamped UUID file under server/models. "
+            f"Default template: {DEFAULT_OUTPUT}"
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     args = parser.parse_args()
 
-    train(Path(args.dataset), Path(args.output), args.epochs, args.lr, args.device)
+    output_path = unique_output_path(Path(args.output or DEFAULT_OUTPUT))
+    train(Path(args.dataset), output_path, args.epochs, args.lr, args.device)
 
 
 def train(dataset_path: Path, output_path: Path, epochs: int, lr: float, device_name: str = "auto") -> None:
@@ -82,6 +95,14 @@ def resolve_device(torch, device_name: str):
         raise SystemExit("MPS is not available. Use --device cpu or --device auto.")
 
     return torch.device(device_name)
+
+
+def unique_output_path(template_path: str | Path) -> Path:
+    template_path = Path(template_path)
+    created_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = template_path.suffix or ".pt"
+    stem = template_path.stem
+    return template_path.with_name(f"{stem}_{created_at}_{uuid.uuid4().hex}{suffix}")
 
 
 def load_samples(dataset_path: Path) -> list[dict]:

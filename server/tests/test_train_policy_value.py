@@ -1,6 +1,6 @@
 import pytest
 
-from server.ml.train_policy_value import resolve_device
+from server.ml.train_policy_value import resolve_device, unique_output_path
 
 
 class FakeCuda:
@@ -44,3 +44,19 @@ def test_resolve_device_uses_mps_before_cpu_for_auto():
 def test_resolve_device_rejects_unavailable_cuda():
     with pytest.raises(SystemExit, match="CUDA is not available"):
         resolve_device(FakeTorch(cuda_available=False), "cuda")
+
+
+def test_unique_output_path_appends_timestamp_and_uuid():
+    output_path = unique_output_path("server/models/simpei_policy_value.pt")
+
+    assert output_path.parent.as_posix() == "server/models"
+    assert output_path.name.startswith("simpei_policy_value_")
+    assert output_path.suffix == ".pt"
+    assert output_path.name != "simpei_policy_value.pt"
+
+
+def test_unique_output_path_preserves_custom_template_stem():
+    output_path = unique_output_path("server/models/custom_model.pt")
+
+    assert output_path.name.startswith("custom_model_")
+    assert output_path.suffix == ".pt"
